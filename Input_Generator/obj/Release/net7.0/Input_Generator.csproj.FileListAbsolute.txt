@@ -1,0 +1,15 @@
+E:\Coding\Università\Progetto parallele\Progetto_Parallele\Input_Generator\bin\Release\net7.0\Input_Generator.exe
+E:\Coding\Università\Progetto parallele\Progetto_Parallele\Input_Generator\bin\Release\net7.0\Input_Generator.deps.json
+E:\Coding\Università\Progetto parallele\Progetto_Parallele\Input_Generator\bin\Release\net7.0\Input_Generator.runtimeconfig.json
+E:\Coding\Università\Progetto parallele\Progetto_Parallele\Input_Generator\bin\Release\net7.0\Input_Generator.dll
+E:\Coding\Università\Progetto parallele\Progetto_Parallele\Input_Generator\bin\Release\net7.0\Input_Generator.pdb
+E:\Coding\Università\Progetto parallele\Progetto_Parallele\Input_Generator\obj\Release\net7.0\Input_Generator.csproj.AssemblyReference.cache
+E:\Coding\Università\Progetto parallele\Progetto_Parallele\Input_Generator\obj\Release\net7.0\Input_Generator.GeneratedMSBuildEditorConfig.editorconfig
+E:\Coding\Università\Progetto parallele\Progetto_Parallele\Input_Generator\obj\Release\net7.0\Input_Generator.AssemblyInfoInputs.cache
+E:\Coding\Università\Progetto parallele\Progetto_Parallele\Input_Generator\obj\Release\net7.0\Input_Generator.AssemblyInfo.cs
+E:\Coding\Università\Progetto parallele\Progetto_Parallele\Input_Generator\obj\Release\net7.0\Input_Generator.csproj.CoreCompileInputs.cache
+E:\Coding\Università\Progetto parallele\Progetto_Parallele\Input_Generator\obj\Release\net7.0\Input_Generator.dll
+E:\Coding\Università\Progetto parallele\Progetto_Parallele\Input_Generator\obj\Release\net7.0\refint\Input_Generator.dll
+E:\Coding\Università\Progetto parallele\Progetto_Parallele\Input_Generator\obj\Release\net7.0\Input_Generator.pdb
+E:\Coding\Università\Progetto parallele\Progetto_Parallele\Input_Generator\obj\Release\net7.0\Input_Generator.genruntimeconfig.cache
+E:\Coding\Università\Progetto parallele\Progetto_Parallele\Input_Generator\obj\Release\net7.0\ref\Input_Generator.dll
