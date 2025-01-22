@@ -4,5 +4,10 @@
 *.ptx
 *.cubin
 *.fatbin
+main.exe
+*.exp
+
+Input_Generator/bin/*
 
 Inputs/*
+Outputs/*
