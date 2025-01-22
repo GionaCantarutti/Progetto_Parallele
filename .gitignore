@@ -6,6 +6,7 @@
 *.fatbin
 main.exe
 *.exp
+*.lib
 
 Input_Generator/bin/*
 
