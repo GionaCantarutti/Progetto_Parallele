@@ -8,12 +8,13 @@ namespace Generator {
             return list;
         }
 
-        public static List<Color[,]> GetInputs() {
-            List<Color[,]> inputs = new List<Color[,]>();
+        public static List<(bool[,], string)> GetInputs() {
+            List<(bool[,], string)> inputs = new List<(bool[,], string)>();
 
-            inputs.Add(Colorify(AllBlack(1000, 1000)));
-            inputs.Add(Colorify(RandomNoise(1000,1000)));
-            inputs.Add(Colorify(RandomStreaks(1000,1000,1/20)));
+            inputs.Add((AllBlack(1000, 1000), "all_black"));
+            inputs.Add((RandomNoise(1000,1000), "random_noise"));
+            inputs.Add((RandomStreaks(1000,1000,1f/20f), "random_streaks"));
+            inputs.Add((RandomStreaks(1000,1000,1f/60f), "sparse_streaks"));
 
             return inputs;
         }
@@ -64,7 +65,8 @@ namespace Generator {
 
             for (int i = 0; i < width; i++) {
                 for (int j = 0; j < height; j++) {
-                    if (rnd.NextDouble() < switchChance) state = !state;
+                    double r = rnd.NextDouble();
+                    if (r < switchChance) state = !state;
                     input[i,j] = state;
                 }
             }
