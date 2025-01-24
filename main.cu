@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include "char_matrix.h"
-#include "serial_cc.h"
+#include "benchmark.h"
 
 __global__ void hello() {
     printf("Hello World!\n");
@@ -9,13 +8,10 @@ __global__ void hello() {
 
 int main() {
 
-    CharMatrix test = readInputFromFile("Inputs/random_streaks.txt");
+    const int nTests = 4;
+    const char* tests[] = {"all_black.txt", "random_noise.txt", "random_streaks.txt", "sparse_streaks.txt"};
 
-    GroupMatrix res = cc_bfs(&test);
-
-    saveGroupMatrixToFile(&res, "Outputs/test.txt");
-
-    freeMat(&test); freeGroups(&res);
+    benchmarkSerial(tests, nTests);
 
     return 0;
 }

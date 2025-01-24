@@ -31,7 +31,7 @@ exit /b 0
 
 :compile_cuda
 echo Compiling CUDA...
-nvcc -o main.exe main.cu char_matrix.cu serial_cc.cu
+nvcc -o main.exe main.cu char_matrix.cu serial_cc.cu benchmark.cu
 
 if %errorlevel% neq 0 (
     echo Compilation of CUDA failed!

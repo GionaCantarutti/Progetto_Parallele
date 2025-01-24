@@ -1,0 +1,1 @@
+void benchmarkSerial(const char** tests, int testCount);
