@@ -4,7 +4,7 @@ GroupMatrix cuda_cc(CharMatrix* mat) {
 
     //ToDo
     GroupMatrix error;
-    error.height, error.width = 0;
+    error.height = 0; error.width = 0;
 
     return error;
 

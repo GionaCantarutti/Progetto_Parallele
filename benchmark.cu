@@ -30,11 +30,12 @@ void benchmarkSerial(const char** tests, int testCount) {
 
 }
 
-typedef struct {
+typedef struct Mapping Mapping;
+struct Mapping {
     int from;
     int into;
     Mapping* next;
-} Mapping;
+};
 
 bool isMapped(Mapping* map, int n) {
 
