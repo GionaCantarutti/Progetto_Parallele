@@ -1,6 +1,7 @@
 #include "benchmark.h"
 #include "char_matrix.h"
 #include "serial_cc.h"
+#include "cuda_cc.h"
 
 void benchmarkSerial(const char** tests, int testCount) {
 

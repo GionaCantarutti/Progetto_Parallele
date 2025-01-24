@@ -2,10 +2,6 @@
 #include <stdlib.h>
 #include "benchmark.h"
 
-__global__ void hello() {
-    printf("Hello World!\n");
-}
-
 int main() {
 
     const int nTests = 4;
