@@ -16,8 +16,8 @@ void benchmarkSerial(const char** tests, int testCount) {
         //ToDo: add timing
         GroupMatrix res = cc_bfs(&test);
 
-        char* outPath = (char*)malloc(sizeof(char) * (strlen(tests[i]) + 9) ); //8 for "Outputs/" and 1 for the "\0"
-        inPath = strcat(strcpy(outPath, "Outputs/"), tests[i]);
+        char* outPath = (char*)malloc(sizeof(char) * (strlen(tests[i]) + 16) ); //15 for "Outputs/Serial/" and 1 for the "\0"
+        inPath = strcat(strcpy(outPath, "Outputs/Serial/"), tests[i]);
 
         saveGroupMatrixToFile(&res, outPath);
 
