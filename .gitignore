@@ -11,4 +11,5 @@ main.exe
 Input_Generator/bin/*
 
 Inputs/*
-Outputs/*
+Outputs/Serial/*
+Outputs/CUDA/*
