@@ -20,16 +20,21 @@ void checkCUDAError(const char *msg) {
 }
 
 enum ChunkStatus {
-    WAITING,
-    WORKING,
-    DIRTY
+    WAITING = 0,
+    DIRTY_NORTH = 1 << 0,
+    DIRTY_EAST = 1 << 1,
+    DIRTY_SOUTH = 1 << 2,
+    DIRTY_WEST = 1 << 3
 };
 
-__device__ void propagate(int lxc, int lyc, int gxc, int gyc, int width, int height, char** mat, int groupsChunk[ChunkSize][ChunkSize], bool* blockStable) {
+//Neighbour deltas
+const int dx[] = {1, -1, 0, 0};
+const int dy[] = {0, 0, 1, -1};
+//Map delta index to cardinal direction (plus reversed direction)
+//const int bd[] = {1 << 1, 1 << 3, 1 << 0, 1 << 2};
+const int bdr[] = {1 << 3, 1 << 1, 1 << 2, 1 << 0};
 
-    //Neighbour deltas
-    const int dx[] = {1, -1, 0, 0};
-    const int dy[] = {0, 0, 1, -1};
+__device__ void propagate(int lxc, int lyc, int gxc, int gyc, int width, int height, char** mat, int groupsChunk[ChunkSize][ChunkSize], bool* blockStable) {
 
     if (lxc >= ChunkSize) lxc -= ChunkSize; //Faster than modulo even though it diverges?
     if (gxc >= width || gyc >= height) return; //Bounds check
@@ -50,10 +55,6 @@ __device__ void propagate(int lxc, int lyc, int gxc, int gyc, int width, int hei
 
 //Propagate but can access global groups and propagate from that to the local groupsChunk
 __device__ void g_to_l_propagate(int lxc, int lyc, int gxc, int gyc, int width, int height, char** mat, int groupsChunk[ChunkSize][ChunkSize], bool* blockStable, int** groups) {
-
-    //Neighbour deltas
-    const int dx[] = {1, -1, 0, 0};
-    const int dy[] = {0, 0, 1, -1};
 
     if (lxc >= ChunkSize) lxc -= ChunkSize; //Faster than modulo even though it diverges?
     if (gxc >= width || gyc >= height) return; //Bounds check
@@ -78,10 +79,12 @@ __global__ void cuda_cc(int** groups, char** mat, int width, int height, ChunkSt
     int gl = gy * width + gx;                           //Global linearized index
     int lx = threadIdx.x; 	                            //Local x index
     int ly = threadIdx.y;                               //Local y index
-    int ll = gy * ChunkSize + gx;                       //Local linearized index
+    int ll = ly * ChunkSize + lx;                       //Local linearized index
 
     __shared__ int groupsChunk[ChunkSize][ChunkSize];
     __shared__ bool blockStable = true;
+    __shared__ bool dirtyNeighbour = true;
+    __shared__ bool dirtyBlock = false;
 
     //Bounds check
     if (gx >= width || gy >= height) return;
@@ -90,22 +93,52 @@ __global__ void cuda_cc(int** groups, char** mat, int width, int height, ChunkSt
     groupsChunk[ly][lx] = gl;
     groupsChunk[ly][lx+(ChunkSize/2)] = gl + (ChunkSize/2);
     __syncthreads(); //Await end of initialization
-
+    
     do {
+
+        //Thread 0 checks for dirty neighbouring blocks
+        if (ll == 0) {
+            for (int i = 0; i < 4; i++) {
+                dirtyNeighbour = status_matrix[blockIdx.x + dx[i]][blockIdx.y + dy[i]] & bdr[i] > 0; //Check if neighbour is dirty in this direction
+                if (dirtyNeighbour) {
+                    status_matrix[blockIdx.x + dx[i]][blockIdx.y + dy[i]] ^ bdr[i]; //Turn off dirty bit in the corresponding direction
+                    break;
+                }
+            }
+        }
+        __syncthreads();
+
+
         blockStable = true;
 
         //Chess pattern
         int lxc = lx * 2 + (ly % 2);    //Local chess x
         int gxc = gx + (lxc - lx);      //Global chess x
 
-        propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable);
-        propagate(lxc + 1, ly, gxc + 1, gy, width, height, mat, groupsChunk, &blockStable);
+        if (!dirtyNeighbour) {
+            propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable);
+            propagate(lxc + 1, ly, gxc + 1, gy, width, height, mat, groupsChunk, &blockStable);
+        } else {
+            g_to_l_propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable, groups);
+            g_to_l_propagate(lxc + 1, ly, gxc + 1, gy, width, height, mat, groupsChunk, &blockStable, groups);
+        }
+
+        if (!blockStable) dirtyBlock = true;
 
         __syncthreads(); //Sync all at the end of an iteration
     } while (!blockStable);
     
-    groups[gy][gx] = groupsChunk[ly][lx];   //Copy stable chunk to global
-    groups[gy][gx + (ChunkSize/2)] = groupsChunk[ly][lx + (ChunkSize/2)];
+    if (dirtyBlock) {
+        //Critical section?
+        groups[gy][gx] = groupsChunk[ly][lx];   //Copy stable chunk to global
+        groups[gy][gx + (ChunkSize/2)] = groupsChunk[ly][lx + (ChunkSize/2)];
+        if (ll == 0) {
+            status_matrix[blockIdx.y][blockIdx.x] = (ChunkStatus)(DIRTY_NORTH | DIRTY_EAST | DIRTY_SOUTH | DIRTY_WEST);
+        }
+        __syncthreads();
+    }
+
+    //ToDo: Busy wait for dirty neighbours or full stabilization event
     
 }
 
@@ -130,7 +163,7 @@ GroupMatrix cuda_cc(CharMatrix* mat) {
     h_status_matrix = (ChunkStatus**)malloc(statusSize);
     for (int x = 0; x < numBlocks.x; x++) {
         for (int y = 0; y < numBlocks.y; y++) {
-            h_status_matrix[y][x] = WAITING;
+            h_status_matrix[y][x] = (ChunkStatus)(DIRTY_SOUTH | DIRTY_EAST);
         }
     }
     enum ChunkStatus** d_stauts_matrix;
