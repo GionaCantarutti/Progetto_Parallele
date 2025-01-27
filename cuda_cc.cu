@@ -119,6 +119,7 @@ __global__ void cuda_cc(int** groups, char** mat, int width, int height, ChunkSt
     
         do {
 
+            //ToDo: only check this every so often?
             if (!dirtyNeighbour) {
                 serialCheckDirty(ll, &dirtyNeighbour, status_matrix, busyBlocks);
             }
@@ -159,7 +160,8 @@ __global__ void cuda_cc(int** groups, char** mat, int width, int height, ChunkSt
         while (true) {
             serialCheckDirty(ll, &dirtyNeighbour, status_matrix, busyBlocks);
             if (dirtyNeighbour) break;
-
+            
+            //ToDo: this is wrong. Needs a better way to check if everything is done
             if (busyBlocks == 0) return;
 
         }
