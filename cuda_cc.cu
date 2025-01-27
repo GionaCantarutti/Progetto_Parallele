@@ -72,7 +72,27 @@ __device__ void g_to_l_propagate(int lxc, int lyc, int gxc, int gyc, int width, 
 
 }
 
-__global__ void cuda_cc(int** groups, char** mat, int width, int height, ChunkStatus** status_matrix) {
+__device__ void serialCheckDirty(int ll, bool* dirtyNeighbour, ChunkStatus** status_matrix, int* busyBlocks) {
+    //Thread 0 checks for dirty neighbouring blocks
+    if (ll == 0) {
+        for (int i = 0; i < 4; i++) {
+            *dirtyNeighbour = status_matrix[blockIdx.x + dx[i]][blockIdx.y + dy[i]] & bdr[i] > 0; //Check if neighbour is dirty in this direction
+            if (*dirtyNeighbour) {
+                status_matrix[blockIdx.x + dx[i]][blockIdx.y + dy[i]] ^ bdr[i]; //Turn off dirty bit in the corresponding direction
+                if (status_matrix[blockIdx.x + dx[i]][blockIdx.y + dy[i]] == 0) atomicAdd(busyBlocks, -1);
+                break;
+            }
+        }
+    }
+    __syncthreads();
+}
+
+//ToDo
+__device__ bool areAllBlocksWaiting() {
+    return false;
+}
+
+__global__ void cuda_cc(int** groups, char** mat, int width, int height, ChunkStatus** status_matrix, int* busyBlocks) {
 
     int gx = blockIdx.x * blockDim.x + threadIdx.x; 	//Global x index
     int gy = blockIdx.y * blockDim.y + threadIdx.y;     //Global y index
@@ -92,53 +112,59 @@ __global__ void cuda_cc(int** groups, char** mat, int width, int height, ChunkSt
     //Init groups
     groupsChunk[ly][lx] = gl;
     groupsChunk[ly][lx+(ChunkSize/2)] = gl + (ChunkSize/2);
-    __syncthreads(); //Await end of initialization
-    
-    do {
 
-        //Thread 0 checks for dirty neighbouring blocks
-        if (ll == 0) {
-            for (int i = 0; i < 4; i++) {
-                dirtyNeighbour = status_matrix[blockIdx.x + dx[i]][blockIdx.y + dy[i]] & bdr[i] > 0; //Check if neighbour is dirty in this direction
-                if (dirtyNeighbour) {
-                    status_matrix[blockIdx.x + dx[i]][blockIdx.y + dy[i]] ^ bdr[i]; //Turn off dirty bit in the corresponding direction
-                    break;
-                }
+    __syncthreads(); //Await end of initialization
+
+    while (true) {
+    
+        do {
+
+            if (!dirtyNeighbour) {
+                serialCheckDirty(ll, &dirtyNeighbour, status_matrix, busyBlocks);
+            }
+
+
+            blockStable = true;
+
+            //Chess pattern
+            int lxc = lx * 2 + (ly % 2);    //Local chess x
+            int gxc = gx + (lxc - lx);      //Global chess x
+
+            if (!dirtyNeighbour) {
+                propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable);
+                propagate(lxc + 1, ly, gxc + 1, gy, width, height, mat, groupsChunk, &blockStable);
+            } else {
+                g_to_l_propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable, groups);
+                g_to_l_propagate(lxc + 1, ly, gxc + 1, gy, width, height, mat, groupsChunk, &blockStable, groups);
+                dirtyNeighbour = false;
+            }
+
+            if (!blockStable) dirtyBlock = true;
+
+            __syncthreads(); //Sync all at the end of an iteration
+        } while (!blockStable);
+        
+        if (dirtyBlock) {
+            //Race conditions shoulnd't be a concern here
+            groups[gy][gx] = groupsChunk[ly][lx];   //Copy stable chunk to global
+            groups[gy][gx + (ChunkSize/2)] = groupsChunk[ly][lx + (ChunkSize/2)];
+            __syncthreads();
+            if (ll == 0) {
+                status_matrix[blockIdx.y][blockIdx.x] = (ChunkStatus)(DIRTY_NORTH | DIRTY_EAST | DIRTY_SOUTH | DIRTY_WEST);
+                atomicAdd(busyBlocks, 1);
             }
         }
-        __syncthreads();
 
+        //ToDo: Busy wait for dirty neighbours or full stabilization event
+        while (true) {
+            serialCheckDirty(ll, &dirtyNeighbour, status_matrix, busyBlocks);
+            if (dirtyNeighbour) break;
 
-        blockStable = true;
+            if (busyBlocks == 0) return;
 
-        //Chess pattern
-        int lxc = lx * 2 + (ly % 2);    //Local chess x
-        int gxc = gx + (lxc - lx);      //Global chess x
-
-        if (!dirtyNeighbour) {
-            propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable);
-            propagate(lxc + 1, ly, gxc + 1, gy, width, height, mat, groupsChunk, &blockStable);
-        } else {
-            g_to_l_propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable, groups);
-            g_to_l_propagate(lxc + 1, ly, gxc + 1, gy, width, height, mat, groupsChunk, &blockStable, groups);
         }
 
-        if (!blockStable) dirtyBlock = true;
-
-        __syncthreads(); //Sync all at the end of an iteration
-    } while (!blockStable);
-    
-    if (dirtyBlock) {
-        //Critical section?
-        groups[gy][gx] = groupsChunk[ly][lx];   //Copy stable chunk to global
-        groups[gy][gx + (ChunkSize/2)] = groupsChunk[ly][lx + (ChunkSize/2)];
-        if (ll == 0) {
-            status_matrix[blockIdx.y][blockIdx.x] = (ChunkStatus)(DIRTY_NORTH | DIRTY_EAST | DIRTY_SOUTH | DIRTY_WEST);
-        }
-        __syncthreads();
     }
-
-    //ToDo: Busy wait for dirty neighbours or full stabilization event
     
 }
 
@@ -158,6 +184,7 @@ GroupMatrix cuda_cc(CharMatrix* mat) {
     //Copy char matrix to device memory
     HANDLE_ERROR(cudaMemcpy(d_mat, (void*)mat->matrix, mat->width * mat->height * sizeof(char), cudaMemcpyHostToDevice));
 
+    //Initialize status matrix
     int statusSize = sizeof(ChunkStatus) * numBlocks.x * numBlocks.y;
     enum ChunkStatus** h_status_matrix;
     h_status_matrix = (ChunkStatus**)malloc(statusSize);
@@ -167,16 +194,15 @@ GroupMatrix cuda_cc(CharMatrix* mat) {
         }
     }
     enum ChunkStatus** d_stauts_matrix;
-    cudaMalloc((void**)&d_stauts_matrix, statusSize);
-    cudaMemcpy(&d_stauts_matrix, &h_status_matrix, statusSize, cudaMemcpyHostToDevice);
+    HANDLE_ERROR(cudaMalloc((void**)&d_stauts_matrix, statusSize));
+    HANDLE_ERROR(cudaMemcpy(&d_stauts_matrix, &h_status_matrix, statusSize, cudaMemcpyHostToDevice));
 
-    //Stable flag
-    //bool d_stable;
-    //bool h_stable = true;
-    //cudaMalloc((void**)&d_stable, sizeof(bool));
-    //cudaMemcpy((void*)&d_stable, &h_stable, sizeof(bool), cudaMemcpyHostToDevice);
+    //Busy count
+    int d_busy;
+    HANDLE_ERROR(cudaMalloc((void**)&d_busy, sizeof(int)));
+    HANDLE_ERROR(cudaMemset(&d_busy, 0, sizeof(int)));
 
-    cuda_cc<<<numBlocks, numThreads>>>(d_groups, d_mat, mat->width, mat->height, &d_stauts_matrix);
+    cuda_cc<<<numBlocks, numThreads>>>(d_groups, d_mat, mat->width, mat->height, d_stauts_matrix, &d_busy);
     cudaDeviceSynchronize();
 
     checkCUDAError("call of cuda_cc kernel");
