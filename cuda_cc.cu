@@ -1,6 +1,6 @@
 #include "char_matrix.h"
 
-#define ChunkSize 32
+#define ChunkSize 64    //Has to be divisible by 2
 
 static void HandleError( cudaError_t err, const char *file, int line ) {
     if (err != cudaSuccess) {
@@ -19,8 +19,59 @@ void checkCUDAError(const char *msg) {
     }
 }
 
+enum ChunkStatus {
+    WAITING,
+    WORKING,
+    DIRTY
+};
 
-__global__ void cuda_cc(int** groups, char** mat, int width, int height) {
+__device__ void propagate(int lxc, int lyc, int gxc, int gyc, int width, int height, char** mat, int groupsChunk[ChunkSize][ChunkSize], bool* blockStable) {
+
+    //Neighbour deltas
+    const int dx[] = {1, -1, 0, 0};
+    const int dy[] = {0, 0, 1, -1};
+
+    if (lxc >= ChunkSize) lxc -= ChunkSize; //Faster than modulo even though it diverges?
+    if (gxc >= width || gyc >= height) return; //Bounds check
+
+    for (int i = 0; i < 4; i++) { //Loop over 4 neighbours
+        int nlxc = lxc + dx[i]; int ngxc = gxc + dx[i];
+        int nlyc = lyc + dy[i]; int ngyc = gyc + dx[i];
+        if (nlxc >= ChunkSize || nlyc >= ChunkSize || nlxc < 0 || nlyc < 0) continue;   //Bounds check (local)
+        if (ngxc >= width || ngyc >= height || ngxc < 0 || ngyc < 0) continue;          //Bounds check (global)
+        bool override = (mat[gyc][gxc] == mat[ngyc][ngxc]) && groupsChunk[lyc][lxc] < groupsChunk[nlyc][nlxc];
+        if (override) {
+            groupsChunk[lyc][lxc] = groupsChunk[nlyc][nlxc];
+            blockStable = false;
+        }
+    }
+
+}
+
+//Propagate but can access global groups and propagate from that to the local groupsChunk
+__device__ void g_to_l_propagate(int lxc, int lyc, int gxc, int gyc, int width, int height, char** mat, int groupsChunk[ChunkSize][ChunkSize], bool* blockStable, int** groups) {
+
+    //Neighbour deltas
+    const int dx[] = {1, -1, 0, 0};
+    const int dy[] = {0, 0, 1, -1};
+
+    if (lxc >= ChunkSize) lxc -= ChunkSize; //Faster than modulo even though it diverges?
+    if (gxc >= width || gyc >= height) return; //Bounds check
+
+    for (int i = 0; i < 4; i++) { //Loop over 4 neighbours
+        int ngxc = gxc + dx[i];
+        int ngyc = gyc + dx[i];
+        if (ngxc >= width || ngyc >= height || ngxc < 0 || ngyc < 0) continue;          //Bounds check (global)
+        bool override = (mat[gyc][gxc] == mat[ngyc][ngxc]) && groupsChunk[lyc][lxc] < groups[ngyc][ngxc];
+        if (override) {
+            groupsChunk[lyc][lxc] = groups[ngyc][ngxc];
+            blockStable = false;
+        }
+    }
+
+}
+
+__global__ void cuda_cc(int** groups, char** mat, int width, int height, ChunkStatus** status_matrix) {
 
     int gx = blockIdx.x * blockDim.x + threadIdx.x; 	//Global x index
     int gy = blockIdx.y * blockDim.y + threadIdx.y;     //Global y index
@@ -29,16 +80,39 @@ __global__ void cuda_cc(int** groups, char** mat, int width, int height) {
     int ly = threadIdx.y;                               //Local y index
     int ll = gy * ChunkSize + gx;                       //Local linearized index
 
-    __shared__ char groupsChunk[ChunkSize][ChunkSize];
+    __shared__ int groupsChunk[ChunkSize][ChunkSize];
+    __shared__ bool blockStable = true;
+
+    //Bounds check
+    if (gx >= width || gy >= height) return;
 
     //Init groups
-    groupsChunk[ly][lx] = ll;
+    groupsChunk[ly][lx] = gl;
+    groupsChunk[ly][lx+(ChunkSize/2)] = gl + (ChunkSize/2);
     __syncthreads(); //Await end of initialization
+
+    do {
+        blockStable = true;
+
+        //Chess pattern
+        int lxc = lx * 2 + (ly % 2);    //Local chess x
+        int gxc = gx + (lxc - lx);      //Global chess x
+
+        propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable);
+        propagate(lxc + 1, ly, gxc + 1, gy, width, height, mat, groupsChunk, &blockStable);
+
+        __syncthreads(); //Sync all at the end of an iteration
+    } while (!blockStable);
     
+    groups[gy][gx] = groupsChunk[ly][lx];   //Copy stable chunk to global
+    groups[gy][gx + (ChunkSize/2)] = groupsChunk[ly][lx + (ChunkSize/2)];
     
 }
 
 GroupMatrix cuda_cc(CharMatrix* mat) {
+
+    dim3 numBlocks( ceil(mat->width / ChunkSize), ceil(mat->height / ChunkSize) );
+    dim3 numThreads(ChunkSize/2, ChunkSize);
 
     //Initialize and allocate device memory for groups
     int** d_groups;
@@ -51,9 +125,25 @@ GroupMatrix cuda_cc(CharMatrix* mat) {
     //Copy char matrix to device memory
     HANDLE_ERROR(cudaMemcpy(d_mat, (void*)mat->matrix, mat->width * mat->height * sizeof(char), cudaMemcpyHostToDevice));
 
-    dim3 numBlocks(ceil(mat->width / ChunkSize), (mat->height) / ChunkSize);
-    dim3 numThreads(ChunkSize, ChunkSize);
-    cuda_cc<<<numBlocks, numThreads>>>(d_groups, d_mat, mat->width, mat->height);
+    int statusSize = sizeof(ChunkStatus) * numBlocks.x * numBlocks.y;
+    enum ChunkStatus** h_status_matrix;
+    h_status_matrix = (ChunkStatus**)malloc(statusSize);
+    for (int x = 0; x < numBlocks.x; x++) {
+        for (int y = 0; y < numBlocks.y; y++) {
+            h_status_matrix[y][x] = WAITING;
+        }
+    }
+    enum ChunkStatus** d_stauts_matrix;
+    cudaMalloc((void**)&d_stauts_matrix, statusSize);
+    cudaMemcpy(&d_stauts_matrix, &h_status_matrix, statusSize, cudaMemcpyHostToDevice);
+
+    //Stable flag
+    //bool d_stable;
+    //bool h_stable = true;
+    //cudaMalloc((void**)&d_stable, sizeof(bool));
+    //cudaMemcpy((void*)&d_stable, &h_stable, sizeof(bool), cudaMemcpyHostToDevice);
+
+    cuda_cc<<<numBlocks, numThreads>>>(d_groups, d_mat, mat->width, mat->height, &d_stauts_matrix);
     cudaDeviceSynchronize();
 
     checkCUDAError("call of cuda_cc kernel");
