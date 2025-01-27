@@ -67,6 +67,22 @@ void freeMat(CharMatrix* mat) {
 
 GroupMatrix initGroups(int width, int height) {
 
+    GroupMatrix newMat = simpleInitGroups(width, height);
+
+    // Init groups
+    for (int x = 0; x < width; x++) {
+        for (int y = 0; y < height; y++) {
+            newMat.groups[x][y] = -1; // -1 meaning "no group"
+        }
+    }
+
+    return newMat;
+
+}
+
+//Init group matrix without setting group values
+GroupMatrix simpleInitGroups(int width, int height) {
+
     GroupMatrix newMat;
     newMat.width = width;
     newMat.height = height;
@@ -75,13 +91,6 @@ GroupMatrix initGroups(int width, int height) {
     int** matrix = (int**)malloc(height * sizeof(int*));
     for (int i = 0; i < height; i++) {
         matrix[i] = (int*)malloc(width * sizeof(int));
-    }
-
-    // Init groups
-    for (int x = 0; x < width; x++) {
-        for (int y = 0; y < height; y++) {
-            matrix[x][y] = -1; // -1 meaning "no group"
-        }
     }
 
     newMat.groups = matrix;
