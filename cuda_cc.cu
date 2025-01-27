@@ -1,7 +1,6 @@
 #include "char_matrix.h"
 
-#define NumThPerBlock 256
-#define NumBlocks 1
+#define ChunkSize 32
 
 static void HandleError( cudaError_t err, const char *file, int line ) {
     if (err != cudaSuccess) {
@@ -23,6 +22,20 @@ void checkCUDAError(const char *msg) {
 
 __global__ void cuda_cc(int** groups, char** mat, int width, int height) {
 
+    int gx = blockIdx.x * blockDim.x + threadIdx.x; 	//Global x index
+    int gy = blockIdx.y * blockDim.y + threadIdx.y;     //Global y index
+    int gl = gy * width + gx;                           //Global linearized index
+    int lx = threadIdx.x; 	                            //Local x index
+    int ly = threadIdx.y;                               //Local y index
+    int ll = gy * ChunkSize + gx;                       //Local linearized index
+
+    __shared__ char groupsChunk[ChunkSize][ChunkSize];
+
+    //Init groups
+    groupsChunk[ly][lx] = ll;
+    __syncthreads(); //Await end of initialization
+    
+    
 }
 
 GroupMatrix cuda_cc(CharMatrix* mat) {
@@ -38,7 +51,9 @@ GroupMatrix cuda_cc(CharMatrix* mat) {
     //Copy char matrix to device memory
     HANDLE_ERROR(cudaMemcpy(d_mat, (void*)mat->matrix, mat->width * mat->height * sizeof(char), cudaMemcpyHostToDevice));
 
-    cuda_cc<<<NumBlocks, NumThPerBlock>>>(d_groups, d_mat, mat->width, mat->height);
+    dim3 numBlocks(ceil(mat->width / ChunkSize), (mat->height) / ChunkSize);
+    dim3 numThreads(ChunkSize, ChunkSize);
+    cuda_cc<<<numBlocks, numThreads>>>(d_groups, d_mat, mat->width, mat->height);
     cudaDeviceSynchronize();
 
     checkCUDAError("call of cuda_cc kernel");

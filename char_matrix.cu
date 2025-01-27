@@ -30,10 +30,7 @@ CharMatrix readInputFromFile(const char* filepath) {
     rewind(file);
 
     // Allocate matrix
-    char** matrix = (char**)malloc(rowCount * sizeof(char*));
-    for (int i = 0; i < rowCount; i++) {
-        matrix[i] = (char*)malloc(colCount * sizeof(char));
-    }
+    char** matrix = (char**)malloc(colCount * rowCount * sizeof(char*));
 
     // Populate matrix
     int row = 0;
