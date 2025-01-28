@@ -113,12 +113,14 @@ void runAndVerify(const char** tests, int testCount) {
 
         free(inPath);
 
+
         GroupMatrix cpu_res = cc_bfs(&test);
         GroupMatrix cuda_res = cuda_cc(&test);
 
+        printf("Agagagaga\n");
         bool match = isMatching(&cpu_res, &cuda_res);
 
-        printf("%s", match ? "Results match" : "Results do not match");
+        printf("%s", match ? "Results match\n" : "Results do not match\n");
 
         freeMat(&test); freeGroups(&cpu_res); freeGroups(&cuda_res);
 

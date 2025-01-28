@@ -13,3 +13,4 @@ Input_Generator/bin/*
 Inputs/*
 Outputs/Serial/*
 Outputs/CUDA/*
+Outputs/Errors/*

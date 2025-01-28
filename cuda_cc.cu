@@ -32,11 +32,11 @@ __constant__ const int dx[] = {1, -1, 0, 0};
 __constant__ const int dy[] = {0, 0, 1, -1};
 //Map delta index to cardinal direction (plus reversed direction)
 //const int bd[] = {1 << 1, 1 << 3, 1 << 0, 1 << 2};
-__constant__ const int bdr[] = {1 << 3, 1 << 1, 1 << 2, 1 << 0};
+__constant__ const int bdr[] = {1 << 3, 1 << 1, 1 << 0, 1 << 2};
 
 __device__ void propagate(int lxc, int lyc, int gxc, int gyc, int width, int height, char* mat, int groupsChunk[ChunkSize * ChunkSize], bool* blockStable) {
 
-    if (lxc >= ChunkSize) lxc -= ChunkSize; //Faster than modulo even though it diverges?
+    if (lxc >= ChunkSize) lxc -= ChunkSize; //Faster than modulo?
     if (gxc >= width || gyc >= height) return; //Bounds check
 
     for (int i = 0; i < 4; i++) { //Loop over 4 neighbours
@@ -44,7 +44,7 @@ __device__ void propagate(int lxc, int lyc, int gxc, int gyc, int width, int hei
         int nlyc = lyc + dy[i]; int ngyc = gyc + dy[i];
         if (nlxc >= ChunkSize || nlyc >= ChunkSize || nlxc < 0 || nlyc < 0) continue;   //Bounds check (local)
         if (ngxc >= width || ngyc >= height || ngxc < 0 || ngyc < 0) continue;          //Bounds check (global)
-        bool override = (mat[gyc * width + gxc] == mat[ngyc * width + ngxc]) && groupsChunk[lyc * ChunkSize + lxc] < groupsChunk[nlyc * ChunkSize + nlxc];
+        bool override = (mat[gyc * width + gxc] == mat[ngyc * width + ngxc]) && groupsChunk[lyc * ChunkSize + lxc] > groupsChunk[nlyc * ChunkSize + nlxc];
         if (override) {
             groupsChunk[lyc * ChunkSize + lxc] = groupsChunk[nlyc * ChunkSize + nlxc];
             blockStable = false;
@@ -56,14 +56,14 @@ __device__ void propagate(int lxc, int lyc, int gxc, int gyc, int width, int hei
 //Propagate but can access global groups and propagate from that to the local groupsChunk
 __device__ void globally_propagate(int lxc, int lyc, int gxc, int gyc, int width, int height, char* mat, int groupsChunk[ChunkSize * ChunkSize], bool* blockStable, int* groups) {
 
-    if (lxc >= ChunkSize) lxc -= ChunkSize; //Faster than modulo even though it diverges?
+    if (lxc >= ChunkSize) lxc -= ChunkSize; //Faster than modulo?
     if (gxc >= width || gyc >= height) return; //Bounds check
 
     for (int i = 0; i < 4; i++) { //Loop over 4 neighbours
         int ngxc = gxc + dx[i];
         int ngyc = gyc + dy[i];
         if (ngxc >= width || ngyc >= height || ngxc < 0 || ngyc < 0) continue;          //Bounds check (global)
-        bool override = (mat[gyc * width + gxc] == mat[ngyc * width + ngxc]) && groupsChunk[lyc * ChunkSize + lxc] < groups[ngyc * width + ngxc];
+        bool override = (mat[gyc * width + gxc] == mat[ngyc * width + ngxc]) && groupsChunk[lyc * ChunkSize + lxc] > groups[ngyc * width + ngxc];
         if (override) {
             groupsChunk[lyc * ChunkSize + lxc] = groups[ngyc * width + ngxc];
             blockStable = false;
@@ -141,12 +141,17 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
     //if (gx >= width || gy >= height) return;
     threadActive = !(gx >= width || gy >= height);
 
-    if (threadActive && initGroups) {
+    int big = width * height + 100;
 
-        //Init groups
-        groupsChunk[ll] = gl;
-        groupsChunk[ll1] = gl1;
-
+    //Init shared memory groups
+    if (threadActive) {
+        if (initGroups) {
+            groupsChunk[ll] = gl;
+            groupsChunk[ll1] = gl1;
+        } else {
+            groupsChunk[ll] = groups[gl];
+            groupsChunk[ll1] = groups[gl1];
+        }
     }
 
     __syncthreads(); //Await end of initialization
@@ -246,27 +251,51 @@ GroupMatrix cuda_cc(CharMatrix* mat) {
     GroupMatrix h_groups = simpleInitGroups(mat->width, mat->height);
 
     bool init = true;
+    int iters = 0;
+    bool err = false;
 
     //Loop until stable
     while (h_dirty > 0) {
 
         cuda_cc<<<numBlocks, numThreads>>>(d_groups, d_mat, mat->width, mat->height, d_status_matrix, numBlocks, d_dirty, init);
+        HANDLE_ERROR(cudaMemcpy(&h_dirty, d_dirty, sizeof(int), cudaMemcpyDeviceToHost));
         cudaDeviceSynchronize();
+        
         checkCUDAError("call of cuda_cc kernel");
 
-
-        HANDLE_ERROR(cudaMemcpy(&h_dirty, d_dirty, sizeof(int), cudaMemcpyDeviceToHost));
         printf("Dirty blocks: %d\n", h_dirty);
         init = false;
 
+        iters++;
+        if (iters > numBlocks.x * numBlocks.y * 5) {
+            printf("Something went wrong! Quitting and logging solution\n");
+            err = true;
+            break;
+        }
+
     }
+
+    printf("Device is done\n");
 
     //Copy group matrix back to host
     HANDLE_ERROR(cudaMemcpy(h_groups.groups, (void*)d_groups, mat->width * mat->height * sizeof(int), cudaMemcpyDeviceToHost));
 
+    if (err) {
+        //Dump groups and dirty matrix to a file
+        GroupMatrix dirtyMatrix;
+        dirtyMatrix.width = numBlocks.x; dirtyMatrix.height = numBlocks.y;
+        dirtyMatrix.groups = (int*)malloc(numBlocks.x * numBlocks.y * sizeof(int));
+        HANDLE_ERROR(cudaMemcpy(dirtyMatrix.groups, (void*)d_status_matrix, dirtyMatrix.width * dirtyMatrix.height * sizeof(int), cudaMemcpyDeviceToHost));
+        cudaDeviceSynchronize();
+        saveGroupMatrixToFile(&h_groups, "Outputs/Errors/err_groups.txt");
+        saveGroupMatrixToFile(&dirtyMatrix, "Outputs/Errors/err_statuses.txt");
+    }
+
     //Free device memory
     HANDLE_ERROR(cudaFree(d_groups));
     HANDLE_ERROR(cudaFree(d_mat));
+
+    cudaDeviceSynchronize();
 
     return h_groups;
 
