@@ -72,6 +72,8 @@ __device__ void globally_propagate(int lxc, int lyc, int gxc, int gyc, int width
 
 }
 
+//Makes thread 0 check if there's a dirty neighbouring chunk. If so lower the corresponding directional dirty flag on that chunk
+//Syncs all threads before returning
 __device__ void serialCheckDirty(int ll, bool* dirtyNeighbour, ChunkStatus* status_matrix, dim3 numBlocks, int* dirtyBlocks) {
     //Thread 0 checks for dirty neighbouring blocks
     if (ll == 0) {
@@ -99,7 +101,7 @@ __device__ void serialCheckDirty(int ll, bool* dirtyNeighbour, ChunkStatus* stat
 }
 
 //ToDo: probs there's a way to get block count without passing it as argument
-__global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStatus* status_matrix, dim3 numBlocks, int* dirtyBlocks, int* busyBlocks) {
+__global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStatus* status_matrix, dim3 numBlocks, int* dirtyBlocks, bool initGroups) {
 
     //Each thread will handle two cells each (hence the doubled indexes). In the memory management part we split the 32x32 chunk into two 16x32 sections.
     //In the iterative algorithm part instead we split the 32x32 chunk into a chessboard pattern of alternating cells so that we can avoid race dontions.
@@ -139,7 +141,7 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
     //if (gx >= width || gy >= height) return;
     threadActive = !(gx >= width || gy >= height);
 
-    if (threadActive) {
+    if (threadActive && initGroups) {
 
         //Init groups
         groupsChunk[ll] = gl;
@@ -150,76 +152,53 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
     __syncthreads(); //Await end of initialization
 
     /////////////////////// End of initialization ///////////////////////
-
-    while (true) {
-
-        printf("dirty: %d\tbusy: %d\n", *dirtyBlocks, *busyBlocks);
     
-        do {
+    do {
 
-            //ToDo: only check this every so often?
-            if (!dirtyNeighbour) {
-                serialCheckDirty(ll, &dirtyNeighbour, status_matrix, numBlocks, dirtyBlocks);
-            }
+        //ToDo: only check this every so often?
+        serialCheckDirty(ll, &dirtyNeighbour, status_matrix, numBlocks, dirtyBlocks);
 
+        blockStable = true;
 
-            blockStable = true;
+        //Chess pattern
+        int lxc = lx * 2 + (ly % 2);    //Local chess x
+        int gxc = gx + (lxc - lx);      //Global chess x
 
-            //Chess pattern
-            int lxc = lx * 2 + (ly % 2);    //Local chess x
-            int gxc = gx + (lxc - lx);      //Global chess x
-
-            if (!dirtyNeighbour) {
-                if (threadActive) propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable);
-                __syncthreads();
-                if (threadActive) propagate(lxc + 1, ly, gxc + 1, gy, width, height, mat, groupsChunk, &blockStable);
-            } else {
-                if (threadActive) globally_propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable, groups);
-                __syncthreads();
-                if (threadActive) globally_propagate(lxc + 1, ly, gxc + 1, gy, width, height, mat, groupsChunk, &blockStable, groups);
-                dirtyNeighbour = false;
-            }
-
-            if (!blockStable) dirtyBlock = true;
-
-            __syncthreads(); //Sync all at the end of an iteration
-        } while (!blockStable);
-        
-        if (dirtyBlock) {
-            //Race conditions shoulnd't be a concern here
-            if (threadActive) {
-                groups[gl] = groupsChunk[ll];   //Copy stable chunk to global
-                groups[gl1] = groupsChunk[ll1];
-            }
-            __syncthreads();
-            if (ll == 0) {
-                //Atomically check if chunk was already dirty and make it dirty
-                ChunkStatus old_status = (ChunkStatus)atomicOr( (int*)&status_matrix[blockIdx.y * numBlocks.x + blockIdx.x],
-                                                                DIRTY_NORTH | DIRTY_EAST | DIRTY_SOUTH | DIRTY_WEST);
-                if (old_status == 0) atomicAdd(dirtyBlocks, 1); // Only increment if previously clean
-            }
+        if (!dirtyNeighbour) {
+            if (threadActive) propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable);
+            __threadfence();
+            if (threadActive) propagate(lxc + 1, ly, gxc + 1, gy, width, height, mat, groupsChunk, &blockStable);
+        } else {
+            if (threadActive) globally_propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable, groups);
+            __threadfence();
+            if (threadActive) globally_propagate(lxc + 1, ly, gxc + 1, gy, width, height, mat, groupsChunk, &blockStable, groups);
+            dirtyNeighbour = false;
         }
 
-        /////////////////////// End of main propagation loop ///////////////////////
+        if (!blockStable) dirtyBlock = true;
 
-        __syncthreads(); //Wait for other threads in the block to be done
-        if (ll == 0) atomicAdd(busyBlocks, -1); //Notify that the block is no longer busy
-
-        //Busy wait for dirty neighbours or full stabilization
-        while (true) {
-
-            //If a dirty neighbour is detected the block goes back into action
-            serialCheckDirty(ll, &dirtyNeighbour, status_matrix, numBlocks, dirtyBlocks); //Note that the check includes a synchthreads at the end
-            if (dirtyNeighbour) {
-                if (ll == 0) atomicAdd(busyBlocks, 1);
-                break;
-            }
-            
-            //Tarmination of the algorithm if all blocks are done working and none are dirty
-            if (*dirtyBlocks == 0 && *busyBlocks == 0) return;
-
+        __syncthreads(); //Sync all at the end of an iteration
+    } while (!blockStable);
+    
+    if (dirtyBlock) {
+        //Race conditions shoulnd't be a concern here
+        if (threadActive) {
+            groups[gl] = groupsChunk[ll];   //Copy stable chunk to global
+            groups[gl1] = groupsChunk[ll1];
         }
-
+        __syncthreads();
+        if (ll == 0) {
+            // Calculate valid neighbors. If a neighbour in one direction doesn't exist the dirty flag shoulnd't be raised because nothing
+            // would be able to then lower it again
+            int flags = WAITING;
+            if (blockIdx.y > 0)             flags |= DIRTY_NORTH;
+            if (blockIdx.x < numBlocks.x-1) flags |= DIRTY_EAST;
+            if (blockIdx.y < numBlocks.y-1) flags |= DIRTY_SOUTH;
+            if (blockIdx.x > 0)             flags |= DIRTY_WEST;
+            //Atomically check if chunk was already dirty and make it dirty
+            ChunkStatus old_status = (ChunkStatus)atomicOr( (int*)&status_matrix[blockIdx.y * numBlocks.x + blockIdx.x], flags);
+            if (old_status == 0) atomicAdd(dirtyBlocks, 1); // Only increment if previously clean
+        }
     }
     
 }
@@ -258,31 +237,36 @@ GroupMatrix cuda_cc(CharMatrix* mat) {
     HANDLE_ERROR(cudaMalloc((void**)&d_status_matrix, statusSize));
     HANDLE_ERROR(cudaMemcpy(d_status_matrix, h_status_matrix, statusSize, cudaMemcpyHostToDevice));
 
-    //Busy and dirty count
-    int* d_busy;
-    int h_busy = numBlocks.x * numBlocks.y;
-    HANDLE_ERROR(cudaMalloc((void**)&d_busy, sizeof(int)));
-    HANDLE_ERROR(cudaMemcpy(d_busy, &h_busy, sizeof(int), cudaMemcpyHostToDevice));
+    //Dirty count
     int* d_dirty;
     int h_dirty = numBlocks.x * numBlocks.y - 1; //Corner block isn't dirty to any neighbours at the start
     HANDLE_ERROR(cudaMalloc((void**)&d_dirty, sizeof(int)));
     HANDLE_ERROR(cudaMemcpy(d_dirty, &h_dirty, sizeof(int), cudaMemcpyHostToDevice));
 
-    cuda_cc<<<numBlocks, numThreads>>>(d_groups, d_mat, mat->width, mat->height, d_status_matrix, numBlocks, d_dirty, d_busy);
-    cudaDeviceSynchronize();
-
-    printf("Done computing on device\n");
-
-    checkCUDAError("call of cuda_cc kernel");
-    
-    //Copy group matrix back to host
     GroupMatrix h_groups = simpleInitGroups(mat->width, mat->height);
+
+    bool init = true;
+
+    //Loop until stable
+    while (h_dirty > 0) {
+
+        cuda_cc<<<numBlocks, numThreads>>>(d_groups, d_mat, mat->width, mat->height, d_status_matrix, numBlocks, d_dirty, init);
+        cudaDeviceSynchronize();
+        checkCUDAError("call of cuda_cc kernel");
+
+
+        HANDLE_ERROR(cudaMemcpy(&h_dirty, d_dirty, sizeof(int), cudaMemcpyDeviceToHost));
+        printf("Dirty blocks: %d\n", h_dirty);
+        init = false;
+
+    }
+
+    //Copy group matrix back to host
     HANDLE_ERROR(cudaMemcpy(h_groups.groups, (void*)d_groups, mat->width * mat->height * sizeof(int), cudaMemcpyDeviceToHost));
 
     //Free device memory
     HANDLE_ERROR(cudaFree(d_groups));
     HANDLE_ERROR(cudaFree(d_mat));
-
 
     return h_groups;
 
