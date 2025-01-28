@@ -30,8 +30,7 @@ enum ChunkStatus {
 //Neighbour deltas
 __constant__ const int dx[] = {1, -1, 0, 0};
 __constant__ const int dy[] = {0, 0, 1, -1};
-//Map delta index to cardinal direction (plus reversed direction)
-//const int bd[] = {1 << 1, 1 << 3, 1 << 0, 1 << 2};
+//Map delta index to cardinal direction in reverse
 __constant__ const int bdr[] = {1 << 3, 1 << 1, 1 << 0, 1 << 2};
 
 __device__ void propagate(int lxc, int lyc, int gxc, int gyc, int width, int height, char* mat, int groupsChunk[ChunkSize * ChunkSize], bool* blockStable) {
@@ -185,7 +184,7 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
         __syncthreads(); //Sync all at the end of an iteration
     } while (!blockStable);
     
-    if (dirtyBlock) {
+    if (dirtyBlock || initGroups) {
         //Race conditions shoulnd't be a concern here
         if (validGlobal) groups[gl] = groupsChunk[ll];   //Copy stable chunk to global
         if (validGlobal1) groups[gl1] = groupsChunk[ll1];
