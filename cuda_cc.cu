@@ -128,7 +128,8 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
     __shared__ bool dirtyNeighbour;                     //Are we yet to account for changes in a neighbouring chunk?
     __shared__ bool dirtyBlock;                         //Has this chunk been changed?
 
-    bool threadActive = true;                           //Is the thread disabled due to out of bounds coordinates?
+    bool validGlobal = true;                            //Is the thread disabled due to out of bounds coordinates?
+    bool validGlobal1 = true;                           //Same but for second set of coordinates
 
     //Initialize flags
     if (ll == 0) {
@@ -139,19 +140,18 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
 
     //Bounds check
     //if (gx >= width || gy >= height) return;
-    threadActive = !(gx >= width || gy >= height);
+    validGlobal = !(gx >= width || gy >= height);
+    validGlobal1 = !(gx1 >= width || gy1 >= height);
 
     int big = width * height + 100;
 
     //Init shared memory groups
-    if (threadActive) {
-        if (initGroups) {
-            groupsChunk[ll] = gl;
-            groupsChunk[ll1] = gl1;
-        } else {
-            groupsChunk[ll] = groups[gl];
-            groupsChunk[ll1] = groups[gl1];
-        }
+    if (initGroups) {
+        groupsChunk[ll] = validGlobal ? gl : big;
+        groupsChunk[ll1] = validGlobal1 ? gl1 : big;
+    } else {
+        groupsChunk[ll] = validGlobal ? groups[gl] : big;
+        groupsChunk[ll1] = validGlobal1 ? groups[gl1] : big;
     }
 
     __syncthreads(); //Await end of initialization
@@ -169,14 +169,14 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
         int lxc = lx * 2 + (ly % 2);    //Local chess x
         int gxc = gx + (lxc - lx);      //Global chess x
 
-        if (!dirtyNeighbour) {
-            if (threadActive) propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable);
+        if (!dirtyNeighbour || initGroups) {
+            if (validGlobal) propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable);
             __threadfence();
-            if (threadActive) propagate(lxc + 1, ly, gxc + 1, gy, width, height, mat, groupsChunk, &blockStable);
+            if (validGlobal) propagate(lxc + 1, ly, gxc + 1, gy, width, height, mat, groupsChunk, &blockStable);
         } else {
-            if (threadActive) globally_propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable, groups);
+            if (validGlobal) globally_propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable, groups);
             __threadfence();
-            if (threadActive) globally_propagate(lxc + 1, ly, gxc + 1, gy, width, height, mat, groupsChunk, &blockStable, groups);
+            if (validGlobal) globally_propagate(lxc + 1, ly, gxc + 1, gy, width, height, mat, groupsChunk, &blockStable, groups);
             dirtyNeighbour = false;
         }
 
@@ -187,10 +187,9 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
     
     if (dirtyBlock) {
         //Race conditions shoulnd't be a concern here
-        if (threadActive) {
-            groups[gl] = groupsChunk[ll];   //Copy stable chunk to global
-            groups[gl1] = groupsChunk[ll1];
-        }
+        if (validGlobal) groups[gl] = groupsChunk[ll];   //Copy stable chunk to global
+        if (validGlobal1) groups[gl1] = groupsChunk[ll1];
+
         __syncthreads();
         if (ll == 0) {
             // Calculate valid neighbors. If a neighbour in one direction doesn't exist the dirty flag shoulnd't be raised because nothing
@@ -257,13 +256,14 @@ GroupMatrix cuda_cc(CharMatrix* mat) {
     //Loop until stable
     while (h_dirty > 0) {
 
+        printf("Dirty blocks: %d\n", h_dirty);
+        
         cuda_cc<<<numBlocks, numThreads>>>(d_groups, d_mat, mat->width, mat->height, d_status_matrix, numBlocks, d_dirty, init);
         HANDLE_ERROR(cudaMemcpy(&h_dirty, d_dirty, sizeof(int), cudaMemcpyDeviceToHost));
         cudaDeviceSynchronize();
         
         checkCUDAError("call of cuda_cc kernel");
 
-        printf("Dirty blocks: %d\n", h_dirty);
         init = false;
 
         iters++;
@@ -286,7 +286,7 @@ GroupMatrix cuda_cc(CharMatrix* mat) {
         dirtyMatrix.width = numBlocks.x; dirtyMatrix.height = numBlocks.y;
         dirtyMatrix.groups = (int*)malloc(numBlocks.x * numBlocks.y * sizeof(int));
         HANDLE_ERROR(cudaMemcpy(dirtyMatrix.groups, (void*)d_status_matrix, dirtyMatrix.width * dirtyMatrix.height * sizeof(int), cudaMemcpyDeviceToHost));
-        cudaDeviceSynchronize();
+        cudaDeviceSynchronize(); //ToDo: check if needed
         saveGroupMatrixToFile(&h_groups, "Outputs/Errors/err_groups.txt");
         saveGroupMatrixToFile(&dirtyMatrix, "Outputs/Errors/err_statuses.txt");
     }
@@ -295,7 +295,7 @@ GroupMatrix cuda_cc(CharMatrix* mat) {
     HANDLE_ERROR(cudaFree(d_groups));
     HANDLE_ERROR(cudaFree(d_mat));
 
-    cudaDeviceSynchronize();
+    cudaDeviceSynchronize(); //ToDo: check if needed
 
     return h_groups;
 
