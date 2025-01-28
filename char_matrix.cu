@@ -29,8 +29,9 @@ CharMatrix readInputFromFile(const char* filepath) {
     }
     rewind(file);
 
+
     // Allocate matrix
-    char** matrix = (char**)malloc(colCount * rowCount * sizeof(char*));
+    char** matrix = (char**)malloc(colCount * rowCount * sizeof(char));
 
     // Populate matrix
     int row = 0;

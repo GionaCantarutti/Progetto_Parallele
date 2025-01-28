@@ -28,11 +28,11 @@ enum ChunkStatus {
 };
 
 //Neighbour deltas
-const int dx[] = {1, -1, 0, 0};
-const int dy[] = {0, 0, 1, -1};
+__constant__ const int dx[] = {1, -1, 0, 0};
+__constant__ const int dy[] = {0, 0, 1, -1};
 //Map delta index to cardinal direction (plus reversed direction)
 //const int bd[] = {1 << 1, 1 << 3, 1 << 0, 1 << 2};
-const int bdr[] = {1 << 3, 1 << 1, 1 << 2, 1 << 0};
+__constant__ const int bdr[] = {1 << 3, 1 << 1, 1 << 2, 1 << 0};
 
 __device__ void propagate(int lxc, int lyc, int gxc, int gyc, int width, int height, char** mat, int groupsChunk[ChunkSize][ChunkSize], bool* blockStable) {
 
@@ -78,7 +78,7 @@ __device__ void serialCheckDirty(int ll, bool* dirtyNeighbour, ChunkStatus** sta
         for (int i = 0; i < 4; i++) {
             *dirtyNeighbour = status_matrix[blockIdx.x + dx[i]][blockIdx.y + dy[i]] & bdr[i] > 0; //Check if neighbour is dirty in this direction
             if (*dirtyNeighbour) {
-                status_matrix[blockIdx.x + dx[i]][blockIdx.y + dy[i]] ^ bdr[i]; //Turn off dirty bit in the corresponding direction
+                status_matrix[blockIdx.x + dx[i]][blockIdx.y + dy[i]] = (ChunkStatus)(status_matrix[blockIdx.x + dx[i]][blockIdx.y + dy[i]] ^ bdr[i]); //Turn off dirty bit in the corresponding direction
                 if (status_matrix[blockIdx.x + dx[i]][blockIdx.y + dy[i]] == 0) atomicAdd(busyBlocks, -1);
                 break;
             }
@@ -92,7 +92,7 @@ __device__ bool areAllBlocksWaiting() {
     return false;
 }
 
-__global__ void cuda_cc(int** groups, char** mat, int width, int height, ChunkStatus** status_matrix, int* busyBlocks) {
+__global__ void cuda_cc(int** groups, char** mat, int width, int height, ChunkStatus** status_matrix, int* dirtyBlocks, int* busyBlocks) {
 
     int gx = blockIdx.x * blockDim.x + threadIdx.x; 	//Global x index
     int gy = blockIdx.y * blockDim.y + threadIdx.y;     //Global y index
@@ -102,9 +102,16 @@ __global__ void cuda_cc(int** groups, char** mat, int width, int height, ChunkSt
     int ll = ly * ChunkSize + lx;                       //Local linearized index
 
     __shared__ int groupsChunk[ChunkSize][ChunkSize];
-    __shared__ bool blockStable = true;
-    __shared__ bool dirtyNeighbour = true;
-    __shared__ bool dirtyBlock = false;
+    __shared__ bool blockStable;
+    __shared__ bool dirtyNeighbour;
+    __shared__ bool dirtyBlock;
+
+    //Initialize flags
+    if (gl == 0) {
+        blockStable = true;
+        dirtyNeighbour = true;
+        dirtyBlock = false;
+    }
 
     //Bounds check
     if (gx >= width || gy >= height) return;
@@ -121,7 +128,7 @@ __global__ void cuda_cc(int** groups, char** mat, int width, int height, ChunkSt
 
             //ToDo: only check this every so often?
             if (!dirtyNeighbour) {
-                serialCheckDirty(ll, &dirtyNeighbour, status_matrix, busyBlocks);
+                serialCheckDirty(ll, &dirtyNeighbour, status_matrix, dirtyBlocks);
             }
 
 
@@ -151,18 +158,23 @@ __global__ void cuda_cc(int** groups, char** mat, int width, int height, ChunkSt
             groups[gy][gx + (ChunkSize/2)] = groupsChunk[ly][lx + (ChunkSize/2)];
             __syncthreads();
             if (ll == 0) {
+                atomicAdd(dirtyBlocks, 1);
                 status_matrix[blockIdx.y][blockIdx.x] = (ChunkStatus)(DIRTY_NORTH | DIRTY_EAST | DIRTY_SOUTH | DIRTY_WEST);
-                atomicAdd(busyBlocks, 1);
             }
         }
 
-        //ToDo: Busy wait for dirty neighbours or full stabilization event
+        atomicAdd(busyBlocks, -1);
+
+        //Busy wait for dirty neighbours or full stabilization
         while (true) {
-            serialCheckDirty(ll, &dirtyNeighbour, status_matrix, busyBlocks);
-            if (dirtyNeighbour) break;
+            serialCheckDirty(ll, &dirtyNeighbour, status_matrix, dirtyBlocks);
+            if (dirtyNeighbour) {
+                atomicAdd(busyBlocks, 1);
+                break;
+            }
             
-            //ToDo: this is wrong. Needs a better way to check if everything is done
-            if (busyBlocks == 0) return;
+            //ToDo: not 100% sure this is iron strong. I think it is though
+            if (dirtyBlocks == 0 && busyBlocks == 0) return;
 
         }
 
@@ -171,17 +183,18 @@ __global__ void cuda_cc(int** groups, char** mat, int width, int height, ChunkSt
 }
 
 GroupMatrix cuda_cc(CharMatrix* mat) {
+    printf("got here");
 
     dim3 numBlocks( ceil(mat->width / ChunkSize), ceil(mat->height / ChunkSize) );
     dim3 numThreads(ChunkSize/2, ChunkSize);
 
     //Initialize and allocate device memory for groups
     int** d_groups;
-    HANDLE_ERROR(cudaMalloc((void**)d_groups, mat->height * mat->width * sizeof(int)));
+    HANDLE_ERROR(cudaMalloc((void**)&d_groups, mat->height * mat->width * sizeof(int)));
 
     //Initialize and allocate device memory for character matrix
     char** d_mat;
-    HANDLE_ERROR(cudaMalloc((void**)d_mat, mat->height * mat->width * sizeof(char)));
+    HANDLE_ERROR(cudaMalloc((void**)&d_mat, mat->height * mat->width * sizeof(char)));
 
     //Copy char matrix to device memory
     HANDLE_ERROR(cudaMemcpy(d_mat, (void*)mat->matrix, mat->width * mat->height * sizeof(char), cudaMemcpyHostToDevice));
@@ -199,12 +212,15 @@ GroupMatrix cuda_cc(CharMatrix* mat) {
     HANDLE_ERROR(cudaMalloc((void**)&d_stauts_matrix, statusSize));
     HANDLE_ERROR(cudaMemcpy(&d_stauts_matrix, &h_status_matrix, statusSize, cudaMemcpyHostToDevice));
 
-    //Busy count
+    //Busy and dirty count
     int d_busy;
     HANDLE_ERROR(cudaMalloc((void**)&d_busy, sizeof(int)));
     HANDLE_ERROR(cudaMemset(&d_busy, 0, sizeof(int)));
+    int d_dirty;
+    HANDLE_ERROR(cudaMalloc((void**)&d_dirty, sizeof(int)));
+    HANDLE_ERROR(cudaMemset(&d_dirty, numBlocks.x * numBlocks.y, sizeof(int)));
 
-    cuda_cc<<<numBlocks, numThreads>>>(d_groups, d_mat, mat->width, mat->height, d_stauts_matrix, &d_busy);
+    cuda_cc<<<numBlocks, numThreads>>>(d_groups, d_mat, mat->width, mat->height, d_stauts_matrix, &d_dirty, &d_busy);
     cudaDeviceSynchronize();
 
     checkCUDAError("call of cuda_cc kernel");
@@ -216,6 +232,7 @@ GroupMatrix cuda_cc(CharMatrix* mat) {
     //Free device memory
     HANDLE_ERROR(cudaFree(d_groups));
     HANDLE_ERROR(cudaFree(d_mat));
+
 
     return h_groups;
 
