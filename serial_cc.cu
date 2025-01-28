@@ -15,7 +15,7 @@ void bfs_run(CharMatrix* chars, GroupMatrix* groups, int x, int y, int groupID) 
 
     Pixel start; start.x = x; start.y = y;
     queue[0] = start;
-    groups->groups[x][y] = groupID;
+    groups->groups[y * groups->width + x] = groupID;
     rear++;
 
     //Neighbour deltas
@@ -30,9 +30,9 @@ void bfs_run(CharMatrix* chars, GroupMatrix* groups, int x, int y, int groupID) 
             Pixel np; np.x = p.x + dx[i]; np.y = p.y + dy[i];
             //Skip pixels that exit the grid or that already have a group
             if (np.x >= chars->width || np.x < 0 || np.y >= chars->height || np.y < 0) continue;
-            if (groups->groups[np.x][np.y] != -1) continue;
-            if (chars->matrix[p.x][p.y] == chars->matrix[np.x][np.y]) {
-                groups->groups[np.x][np.y] = groupID;
+            if (groups->groups[np.y * groups->width + np.x] != -1) continue;
+            if (chars->matrix[p.y * chars->width + p.x] == chars->matrix[np.y * chars->width + np.x]) {
+                groups->groups[np.y * groups->width + np.x] = groupID;
                 queue[rear++] = np;
             }
 
@@ -54,7 +54,7 @@ GroupMatrix cc_bfs(CharMatrix* mat) {
         for (int y = 0; y < mat->height; y++) {
 
             //If pixel has a group skip it
-            if (groups.groups[x][y] != -1) continue;
+            if (groups.groups[y * groups.width + x] != -1) continue;
 
             bfs_run(mat, &groups, x, y, nextID++);
 

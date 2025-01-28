@@ -5,13 +5,13 @@
 #include <stdlib.h>
 
 typedef struct {
-    char** matrix;
+    char* matrix;
     int width;
     int height;
 } CharMatrix;
 
 typedef struct {
-    int** groups;
+    int* groups;
     int width;
     int height;
 } GroupMatrix;

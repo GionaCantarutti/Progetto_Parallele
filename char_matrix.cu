@@ -30,14 +30,14 @@ CharMatrix readInputFromFile(const char* filepath) {
     rewind(file);
 
 
-    // Allocate matrix
-    char** matrix = (char**)malloc(colCount * rowCount * sizeof(char));
+    // Allocate matrix (linearized)
+    char* matrix = (char*)malloc(colCount * rowCount * sizeof(char*));
 
     // Populate matrix
     int row = 0;
     while (fgets(line, colCount + 2, file)) {
         for (int col = 0; col < colCount; col++) {
-            matrix[row][col] = line[col];
+            matrix[row * colCount + col] = line[col];
         }
         row++;
     }
@@ -54,13 +54,17 @@ CharMatrix readInputFromFile(const char* filepath) {
 }
 
 // Frees the memory allocated for the CharMatrix
+//void freeMat(CharMatrix* mat) {
+//    if (mat->width != 0 && mat->height != 0) {
+//        for (int x = 0; x < mat->height; x++) {
+//            free(mat->matrix[x]);
+//        }
+//        free(mat->matrix);
+//    }
+//}
+
 void freeMat(CharMatrix* mat) {
-    if (mat->width != 0 && mat->height != 0) {
-        for (int x = 0; x < mat->height; x++) {
-            free(mat->matrix[x]);
-        }
-        free(mat->matrix);
-    }
+    free(mat->matrix);
 }
 
 GroupMatrix initGroups(int width, int height) {
@@ -70,7 +74,7 @@ GroupMatrix initGroups(int width, int height) {
     // Init groups
     for (int x = 0; x < width; x++) {
         for (int y = 0; y < height; y++) {
-            newMat.groups[x][y] = -1; // -1 meaning "no group"
+            newMat.groups[y * width + x] = -1; // -1 meaning "no group"
         }
     }
 
@@ -86,10 +90,7 @@ GroupMatrix simpleInitGroups(int width, int height) {
     newMat.height = height;
 
     // Allocate matrix
-    int** matrix = (int**)malloc(height * sizeof(int*));
-    for (int i = 0; i < height; i++) {
-        matrix[i] = (int*)malloc(width * sizeof(int));
-    }
+    int* matrix = (int*)malloc(height * width * sizeof(int));
 
     newMat.groups = matrix;
 
@@ -97,13 +98,17 @@ GroupMatrix simpleInitGroups(int width, int height) {
 
 }
 
+//void freeGroups(GroupMatrix* mat) {
+//    if (mat->width != 0 && mat->height != 0) {
+//        for (int x = 0; x < mat->height; x++) {
+//            free(mat->groups[x]);
+//        }
+//        free(mat->groups);
+//    }
+//}
+
 void freeGroups(GroupMatrix* mat) {
-    if (mat->width != 0 && mat->height != 0) {
-        for (int x = 0; x < mat->height; x++) {
-            free(mat->groups[x]);
-        }
-        free(mat->groups);
-    }
+    free(mat->groups);
 }
 
 void saveGroupMatrixToFile(const GroupMatrix* groups, const char* filepath) {
@@ -115,7 +120,7 @@ void saveGroupMatrixToFile(const GroupMatrix* groups, const char* filepath) {
 
     for (int y = 0; y < groups->height; y++) {
         for (int x = 0; x < groups->width; x++) {
-            fprintf(file, "%d", groups->groups[y][x]);
+            fprintf(file, "%d", groups->groups[y * groups->width + x]);
             if (x < groups->width - 1) fprintf(file, " ");
         }
         fprintf(file, "\n");

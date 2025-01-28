@@ -82,16 +82,16 @@ bool isMatching(GroupMatrix* a, GroupMatrix* b) {
     if (a->width != b->width || a->height != b->height) return false;
 
     Mapping map;
-    map.from = a->groups[0][0];
-    map.into = b->groups[0][0];
+    map.from = a->groups[0];
+    map.into = b->groups[0];
 
     for (int x = 0; x < a->width; x++) {
         for (int y = 0; y < a->height; y++) {
 
-            if (isMapped(&map, a->groups[x][y])) {
-                if (mapped(&map, a->groups[x][y]) != b->groups[x][y]) return false;
+            if (isMapped(&map, a->groups[y * a->width + x])) {
+                if (mapped(&map, a->groups[y * a->width + x]) != b->groups[y * b->width + x]) return false;
             } else {
-                if (!addMapping(&map, a->groups[x][y], b->groups[x][y])) return false;
+                if (!addMapping(&map, a->groups[y * a->width + x], b->groups[y * b->width + x])) return false;
             }
 
         }
