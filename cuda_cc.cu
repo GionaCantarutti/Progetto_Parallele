@@ -134,8 +134,7 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
     __shared__ bool dirtyNeighbour;                     //Are we yet to account for changes in a neighbouring chunk?
     __shared__ bool dirtyBlock;                         //Has this chunk been changed?
 
-    bool validGlobal = true;                            //Is the thread disabled due to out of bounds coordinates?
-    bool validGlobal1 = true;                           //Same but for second set of coordinates
+    bool validGlobal1 = true;                           //Is the second set of coordinates globally valid?
 
     //Initialize flags
     if (ll == 0) {
@@ -146,14 +145,15 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
 
     //Bounds check
     //if (gx >= width || gy >= height) return;
-    validGlobal = !(gx >= width || gy >= height);
+    if (gx >= width || gy >= height) return;
     validGlobal1 = !(gx1 >= width || gy1 >= height);
 
     int big = width * height + 100;
 
     //Init shared memory groups
-    groupsChunk[ll] = validGlobal ? groups[gl] : big;
+    groupsChunk[ll] = groups[gl];
     groupsChunk[ll1] = validGlobal1 ? groups[gl1] : big;
+
 
     __syncthreads(); //Await end of initialization
 
@@ -175,13 +175,13 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
         int gxc = blockStartX + lxc;    //Global chess x
 
         if (!dirtyNeighbour) {
-            if (validGlobal) propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable);
+            propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable);
             __syncthreads();
-            if (validGlobal) propagate(lxc + 1, ly, gxc + 1, gy, width, height, mat, groupsChunk, &blockStable);
+            propagate(lxc + 1, ly, gxc + 1, gy, width, height, mat, groupsChunk, &blockStable);
         } else {
-            if (validGlobal) globally_propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable, groups);
+            globally_propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable, groups);
             __syncthreads();
-            if (validGlobal) globally_propagate(lxc + 1, ly, gxc + 1, gy, width, height, mat, groupsChunk, &blockStable, groups);
+            globally_propagate(lxc + 1, ly, gxc + 1, gy, width, height, mat, groupsChunk, &blockStable, groups);
         }
 
         __syncthreads(); //Sync all at the end of an iteration
@@ -192,7 +192,7 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
     __threadfence();
     if (dirtyBlock) {
         //Race conditions shoulnd't be a concern here
-        if (validGlobal) groups[gl] = groupsChunk[ll];   //Copy stable chunk to global
+        groups[gl] = groupsChunk[ll];   //Copy stable chunk to global
         if (validGlobal1) groups[gl1] = groupsChunk[ll1];
 
         __syncthreads();
