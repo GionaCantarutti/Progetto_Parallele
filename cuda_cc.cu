@@ -43,10 +43,10 @@ __device__ void propagate(int lxc, int lyc, int gxc, int gyc, int width, int hei
         int nlyc = lyc + dy[i]; int ngyc = gyc + dy[i];
         if (nlxc >= ChunkSize || nlyc >= ChunkSize || nlxc < 0 || nlyc < 0) continue;   //Bounds check (local)
         if (ngxc >= width || ngyc >= height || ngxc < 0 || ngyc < 0) continue;          //Bounds check (global)
-        bool override = (mat[gyc * width + gxc] == mat[ngyc * width + ngxc]) && groupsChunk[lyc * ChunkSize + lxc] > groupsChunk[nlyc * ChunkSize + nlxc];
-        if (override) {
-            groupsChunk[lyc * ChunkSize + lxc] = groupsChunk[nlyc * ChunkSize + nlxc];
-            blockStable = false;
+
+        if (mat[gyc * width + gxc] == mat[ngyc * width + ngxc]) {
+            int oldGroup = atomicMin(&groupsChunk[lyc * ChunkSize + lxc], groupsChunk[nlyc * ChunkSize + nlxc]); //Atomicity to prevent race conditions between check and assignment
+            *blockStable = oldGroup != groupsChunk[lyc * ChunkSize + lxc] ? false : *blockStable; //Only mark as non-stable if value was changed
         }
     }
 
@@ -65,7 +65,7 @@ __device__ void globally_propagate(int lxc, int lyc, int gxc, int gyc, int width
 
         if (mat[gyc * width + gxc] == mat[ngyc * width + ngxc]) {
             int oldGroup = atomicMin(&groups[gyc * width + gxc], groups[ngyc * width + ngxc]); //Atomicity to prevent race conditions between check and assignment
-            *blockStable = oldGroup != groups[gyc * width + gxc] ? true : *blockStable; //Only mark as non-stable if value was changed
+            *blockStable = oldGroup != groups[gyc * width + gxc] ? false : *blockStable; //Only mark as non-stable if value was changed
         }
     }
 
@@ -92,7 +92,6 @@ __device__ void serialCheckDirty(int ll, bool* dirtyNeighbour, ChunkStatus* stat
                 if ((old_status & mask) == 0) { //If the last dirty bit has been cleared by this operation decrement dirtyBlocks
                     atomicAdd(dirtyBlocks, -1);
                 }
-                break;
             }
         }
     }
@@ -162,7 +161,8 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
         //ToDo: only check this every so often?
         serialCheckDirty(ll, &dirtyNeighbour, status_matrix, numBlocks, dirtyBlocks);
 
-        blockStable = true;
+        if (ll == 0) blockStable = true;
+        __syncthreads();
 
         //Chess pattern
         int lxc = lx * 2 + (ly % 2);    //Local chess x
@@ -170,21 +170,21 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
 
         if (!dirtyNeighbour || initGroups) {
             if (validGlobal) propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable);
-            __threadfence();
+            __threadfence_block();
             if (validGlobal) propagate(lxc + 1, ly, gxc + 1, gy, width, height, mat, groupsChunk, &blockStable);
         } else {
             if (validGlobal) globally_propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable, groups);
-            __threadfence();
+            __threadfence_block();
             if (validGlobal) globally_propagate(lxc + 1, ly, gxc + 1, gy, width, height, mat, groupsChunk, &blockStable, groups);
             dirtyNeighbour = false;
         }
 
-        if (!blockStable) dirtyBlock = true;
-
         __threadfence_block();
         __syncthreads(); //Sync all at the end of an iteration
+        if (!blockStable) dirtyBlock = true;
     } while (!blockStable);
     
+    __threadfence();
     if (dirtyBlock || initGroups) {
         //Race conditions shoulnd't be a concern here
         if (validGlobal) groups[gl] = groupsChunk[ll];   //Copy stable chunk to global
