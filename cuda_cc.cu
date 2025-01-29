@@ -45,8 +45,12 @@ __device__ void propagate(int lxc, int lyc, int gxc, int gyc, int width, int hei
         if (ngxc >= width || ngyc >= height || ngxc < 0 || ngyc < 0) continue;          //Bounds check (global)
 
         if (mat[gyc * width + gxc] == mat[ngyc * width + ngxc]) {
-            int oldGroup = atomicMin(&groupsChunk[lyc * ChunkSize + lxc], groupsChunk[nlyc * ChunkSize + nlxc]); //Atomicity to prevent race conditions between check and assignment
-            *blockStable = oldGroup != groupsChunk[lyc * ChunkSize + lxc] ? false : *blockStable; //Only mark as non-stable if value was changed
+            if (groupsChunk[lyc * ChunkSize + lxc] > groupsChunk[nlyc * ChunkSize + nlxc]) {
+                groupsChunk[lyc * ChunkSize + lxc] = groupsChunk[nlyc * ChunkSize + nlxc];
+                *blockStable = false;
+            }
+            // int oldGroup = atomicMin(&groupsChunk[lyc * ChunkSize + lxc], groupsChunk[nlyc * ChunkSize + nlxc]); //Atomicity to prevent race conditions between check and assignment
+            // *blockStable = oldGroup != groupsChunk[lyc * ChunkSize + lxc] ? false : *blockStable; //Only mark as non-stable if value was changed
         }
     }
 
@@ -64,8 +68,12 @@ __device__ void globally_propagate(int lxc, int lyc, int gxc, int gyc, int width
         if (ngxc >= width || ngyc >= height || ngxc < 0 || ngyc < 0) continue;          //Bounds check (global)
 
         if (mat[gyc * width + gxc] == mat[ngyc * width + ngxc]) {
-            int oldGroup = atomicMin(&groupsChunk[lyc * ChunkSize + lxc], groups[ngyc * width + ngxc]); //Atomicity to prevent race conditions between check and assignment
-            *blockStable = oldGroup != groupsChunk[lyc * ChunkSize + lxc] ? false : *blockStable; //Only mark as non-stable if value was changed
+            if (groupsChunk[lyc * ChunkSize + lxc] > groups[ngyc * width + ngxc]) {
+                groupsChunk[lyc * ChunkSize + lxc] = groups[ngyc * width + ngxc];
+                *blockStable = false;
+            }
+            // int oldGroup = atomicMin(&groupsChunk[lyc * ChunkSize + lxc], groups[ngyc * width + ngxc]); //Atomicity to prevent race conditions between check and assignment
+            // *blockStable = oldGroup != groupsChunk[lyc * ChunkSize + lxc] ? false : *blockStable; //Only mark as non-stable if value was changed
         }
     }
 
@@ -164,21 +172,21 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
 
         //Chess pattern
         int lxc = lx * 2 + (ly % 2);    //Local chess x
-        int gxc = gx + (lxc - lx);      //Global chess x
+        int gxc = blockStartX + lxc;    //Global chess x
 
         if (!dirtyNeighbour) {
             if (validGlobal) propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable);
-            __threadfence_block();
+            __syncthreads();
             if (validGlobal) propagate(lxc + 1, ly, gxc + 1, gy, width, height, mat, groupsChunk, &blockStable);
         } else {
             if (validGlobal) globally_propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable, groups);
-            __threadfence_block();
+            __syncthreads();
             if (validGlobal) globally_propagate(lxc + 1, ly, gxc + 1, gy, width, height, mat, groupsChunk, &blockStable, groups);
         }
 
-        __threadfence_block();
         __syncthreads(); //Sync all at the end of an iteration
         if (!blockStable) dirtyBlock = true;
+        __syncthreads();
     } while (!blockStable);
     
     __threadfence();
