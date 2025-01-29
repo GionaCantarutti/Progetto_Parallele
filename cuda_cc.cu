@@ -181,6 +181,7 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
 
         if (!blockStable) dirtyBlock = true;
 
+        __threadfence_block();
         __syncthreads(); //Sync all at the end of an iteration
     } while (!blockStable);
     
@@ -246,7 +247,7 @@ GroupMatrix cuda_cc(CharMatrix* mat) {
     HANDLE_ERROR(cudaMalloc((void**)&d_dirty, sizeof(int)));
     HANDLE_ERROR(cudaMemcpy(d_dirty, &h_dirty, sizeof(int), cudaMemcpyHostToDevice));
 
-    GroupMatrix h_groups = simpleInitGroups(mat->width, mat->height);
+    GroupMatrix h_groups = initGroupsUnique(mat->width, mat->height);
 
     bool init = true;
     int iters = 0;

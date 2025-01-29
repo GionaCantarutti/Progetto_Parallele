@@ -69,12 +69,34 @@ void freeMat(CharMatrix* mat) {
 
 GroupMatrix initGroups(int width, int height) {
 
+    return initGroupsVal(width, height, -1); // -1 meaning "no group"
+
+}
+
+GroupMatrix initGroupsUnique(int width, int height) {
+
     GroupMatrix newMat = simpleInitGroups(width, height);
 
     // Init groups
     for (int x = 0; x < width; x++) {
         for (int y = 0; y < height; y++) {
-            newMat.groups[y * width + x] = -1; // -1 meaning "no group"
+            int index = y * width + x;
+            newMat.groups[index] = index;
+        }
+    }
+
+    return newMat;
+
+}
+
+GroupMatrix initGroupsVal(int width, int height, int val) {
+
+    GroupMatrix newMat = simpleInitGroups(width, height);
+
+    // Init groups
+    for (int x = 0; x < width; x++) {
+        for (int y = 0; y < height; y++) {
+            newMat.groups[y * width + x] = val;
         }
     }
 
