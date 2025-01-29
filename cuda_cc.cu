@@ -35,7 +35,6 @@ __constant__ const int bdr[] = {1 << 3, 1 << 1, 1 << 0, 1 << 2};
 
 __device__ void propagate(int lxc, int lyc, int gxc, int gyc, int width, int height, char* mat, int groupsChunk[ChunkSize * ChunkSize], bool* blockStable) {
 
-    if (lxc >= ChunkSize) lxc -= ChunkSize; //Faster than modulo?
     if (gxc >= width || gyc >= height) return; //Bounds check
 
     for (int i = 0; i < 4; i++) { //Loop over 4 neighbours
@@ -57,7 +56,6 @@ __device__ void propagate(int lxc, int lyc, int gxc, int gyc, int width, int hei
 //Propagate but can access global groups and propagate from that to the local groupsChunk
 __device__ void globally_propagate(int lxc, int lyc, int gxc, int gyc, int width, int height, char* mat, int groupsChunk[ChunkSize * ChunkSize], bool* blockStable, int* groups) {
 
-    if (lxc >= ChunkSize) lxc -= ChunkSize; //Faster than modulo?
     if (gxc >= width || gyc >= height) return; //Bounds check
 
     for (int i = 0; i < 4; i++) { //Loop over 4 neighbours
@@ -167,8 +165,9 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
         __syncthreads();
 
         //Chess pattern
-        int lxc = lx * 2 + (ly % 2);    //Local chess x
-        int gxc = blockStartX + lxc;    //Global chess x
+        int lxc = lx * 2 + (ly % 2);            //Local chess x    
+        if (lxc >= ChunkSize) lxc -= ChunkSize; //Faster than modulo? <- THIS CAUSES ENDLESS LOOP BUT SHOULD BE CORRECT??
+        int gxc = blockStartX + lxc;            //Global chess x
 
         if (!dirtyNeighbour) {
             propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable);
