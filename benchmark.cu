@@ -144,9 +144,9 @@ void runAndVerify(const char** tests, int testCount) {
         GroupMatrix cpu_res = cc_bfs(&test);
         GroupMatrix cuda_res = cuda_cc(&test);
 
+        printf("Testing \"%s\"...\n", tests[i]);
         bool match = isMatching(&cpu_res, &cuda_res);
-
-        printf("%s", match ? "Results match\n" : "Results do not match\n");
+        printf("%s", match ? "Results match!\n" : "Results do not match!\n");
 
         if (!match) {
             char* errPath = (char*)malloc(sizeof(char) * (strlen(tests[i]) + 30) ); //21 for "Outputs/Errors/missmatch_cpu_" and 1 for the "\0"

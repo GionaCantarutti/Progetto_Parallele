@@ -274,8 +274,6 @@ GroupMatrix cuda_cc(CharMatrix* mat) {
 
     }
 
-    printf("Device is done\n");
-
     //Copy group matrix back to host
     HANDLE_ERROR(cudaMemcpy(h_groups.groups, (void*)d_groups, mat->width * mat->height * sizeof(int), cudaMemcpyDeviceToHost));
 
