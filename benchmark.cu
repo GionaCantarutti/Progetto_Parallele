@@ -107,6 +107,8 @@ bool isMatching(GroupMatrix* a, GroupMatrix* b) {
             if (current->from == a_val) {
                 if (current->into != b_val) {
                     freeMappings(map);
+                    printf("Found missmatch at (%d, %d)\n", i % a->width, i / a->width);
+                    printf("A's value maps to %d but %d is expected", current->into, b_val);
                     return false;
                 }
                 found = true;

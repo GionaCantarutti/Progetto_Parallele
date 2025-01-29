@@ -128,6 +128,7 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
     __shared__ bool dirtyNeighbour;                     //Are we yet to account for changes in a neighbouring chunk?
     __shared__ bool dirtyBlock;                         //Has this chunk been changed?
 
+    bool validGlobal = true;                            //Is the first set of coordinates globally valid?
     bool validGlobal1 = true;                           //Is the second set of coordinates globally valid?
 
     //Initialize flags
@@ -139,13 +140,13 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
 
     //Bounds check
     //if (gx >= width || gy >= height) return;
-    if (gx >= width || gy >= height) return;
+    validGlobal = !(gx >= width || gy >= height);
     validGlobal1 = !(gx1 >= width || gy1 >= height);
 
     int big = width * height + 100;
 
     //Init shared memory groups
-    groupsChunk[ll] = groups[gl];
+    groupsChunk[ll] = validGlobal ? groups[gl] : big;
     groupsChunk[ll1] = validGlobal1 ? groups[gl1] : big;
 
 
@@ -167,8 +168,7 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
         //Chess pattern
         int lxc = lx * 2 + (ly % 2);    //Local chess x
         int gxc = blockStartX + lxc;    //Global chess x
-        int lxc1 = lxc + 1;
-        if (lxc1 >= ChunkSize) lxc1 -= ChunkSize; //Faster than modulo?
+        int lxc1 = lx * 2 + ((ly + 1) % 2);
         int gxc1 = blockStartX + lxc1;
 
         if (!dirtyNeighbour) {
@@ -189,7 +189,7 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
     __threadfence();
     if (dirtyBlock) {
         //Race conditions shoulnd't be a concern here
-        groups[gl] = groupsChunk[ll];   //Copy stable chunk to global
+        if (validGlobal) groups[gl] = groupsChunk[ll];   //Copy stable chunk to global
         if (validGlobal1) groups[gl1] = groupsChunk[ll1];
 
         __syncthreads();
