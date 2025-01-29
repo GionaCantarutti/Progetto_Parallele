@@ -45,12 +45,10 @@ __device__ void propagate(int lxc, int lyc, int gxc, int gyc, int width, int hei
         if (ngxc >= width || ngyc >= height || ngxc < 0 || ngyc < 0) continue;          //Bounds check (global)
 
         if (mat[gyc * width + gxc] == mat[ngyc * width + ngxc]) {
-            if (groupsChunk[lyc * ChunkSize + lxc] > groupsChunk[nlyc * ChunkSize + nlxc]) {
+            if (groupsChunk[lyc * ChunkSize + lxc] > groupsChunk[nlyc * ChunkSize + nlxc]) { //Safe thanks to chessboard pattern
                 groupsChunk[lyc * ChunkSize + lxc] = groupsChunk[nlyc * ChunkSize + nlxc];
                 *blockStable = false;
             }
-            // int oldGroup = atomicMin(&groupsChunk[lyc * ChunkSize + lxc], groupsChunk[nlyc * ChunkSize + nlxc]); //Atomicity to prevent race conditions between check and assignment
-            // *blockStable = oldGroup != groupsChunk[lyc * ChunkSize + lxc] ? false : *blockStable; //Only mark as non-stable if value was changed
         }
     }
 
@@ -68,12 +66,10 @@ __device__ void globally_propagate(int lxc, int lyc, int gxc, int gyc, int width
         if (ngxc >= width || ngyc >= height || ngxc < 0 || ngyc < 0) continue;          //Bounds check (global)
 
         if (mat[gyc * width + gxc] == mat[ngyc * width + ngxc]) {
-            if (groupsChunk[lyc * ChunkSize + lxc] > groups[ngyc * width + ngxc]) {
+            if (groupsChunk[lyc * ChunkSize + lxc] > groups[ngyc * width + ngxc]) { //Safe thanks to chessboard pattern
                 groupsChunk[lyc * ChunkSize + lxc] = groups[ngyc * width + ngxc];
                 *blockStable = false;
             }
-            // int oldGroup = atomicMin(&groupsChunk[lyc * ChunkSize + lxc], groups[ngyc * width + ngxc]); //Atomicity to prevent race conditions between check and assignment
-            // *blockStable = oldGroup != groupsChunk[lyc * ChunkSize + lxc] ? false : *blockStable; //Only mark as non-stable if value was changed
         }
     }
 
@@ -235,12 +231,13 @@ GroupMatrix cuda_cc(CharMatrix* mat) {
     enum ChunkStatus* h_status_matrix;
     h_status_matrix = (ChunkStatus*)malloc(statusSize);
     // Initialize status matrix with by forcing a first inter-block communication before anything else happens
-    // We only set south and east because of group IDs being bigger only in those direction in the initial configuration
     for (int x = 0; x < numBlocks.x; x++) {
         for (int y = 0; y < numBlocks.y; y++) {
             int status = WAITING;
-            if (y < numBlocks.y - 1) status |= DIRTY_SOUTH;  // Valid south neighbor
-            if (x < numBlocks.x - 1) status |= DIRTY_EAST;   // Valid east neighbor
+            if (y < numBlocks.y - 1) status |= DIRTY_SOUTH;
+            if (x < numBlocks.x - 1) status |= DIRTY_EAST;
+            if (y > 0)               status |= DIRTY_NORTH;
+            if (x > 0)               status |= DIRTY_WEST;
             h_status_matrix[y * numBlocks.x + x] = (ChunkStatus)status;
         }
     }
@@ -250,7 +247,7 @@ GroupMatrix cuda_cc(CharMatrix* mat) {
 
     //Dirty count
     int* d_dirty;
-    int h_dirty = numBlocks.x * numBlocks.y - 1; //Corner block isn't dirty to any neighbours at the start
+    int h_dirty = numBlocks.x * numBlocks.y; //Corner block isn't dirty to any neighbours at the start
     HANDLE_ERROR(cudaMalloc((void**)&d_dirty, sizeof(int)));
     HANDLE_ERROR(cudaMemcpy(d_dirty, &h_dirty, sizeof(int), cudaMemcpyHostToDevice));
 
@@ -260,7 +257,7 @@ GroupMatrix cuda_cc(CharMatrix* mat) {
     //Loop until stable
     while (h_dirty > 0 && !err) {
 
-        printf("Dirty blocks: %d\n", h_dirty);
+        //printf("Dirty blocks: %d\n", h_dirty);
         
         cuda_cc<<<numBlocks, numThreads>>>(d_groups, d_mat, mat->width, mat->height, d_status_matrix, numBlocks, d_dirty);
         HANDLE_ERROR(cudaMemcpy(&h_dirty, d_dirty, sizeof(int), cudaMemcpyDeviceToHost));
