@@ -109,10 +109,10 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
 
     int lx = threadIdx.x; 	                            //Local x index
     int ly = threadIdx.y;                               //Local y index
-    int ll = ly * (ChunkSize/2) + lx;                   //Local linearized index
+    int ll = ly * ChunkSize + lx;                       //Local linearized index
     int lx1 = threadIdx.x + (ChunkSize/2);              //Second local x index
     int ly1 = ly;                                       //Second local y index
-    int ll1 = ll + (ChunkSize/2);                       //Second local linearized index
+    int ll1 = ly1 * ChunkSize + lx1;                    //Second local linearized index
     
     int gx = blockStartX + lx; 	                        //Global x index
     int gy = blockStartY + ly;                          //Global y index
