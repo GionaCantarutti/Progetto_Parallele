@@ -62,10 +62,10 @@ __device__ void globally_propagate(int lxc, int lyc, int gxc, int gyc, int width
         int ngxc = gxc + dx[i];
         int ngyc = gyc + dy[i];
         if (ngxc >= width || ngyc >= height || ngxc < 0 || ngyc < 0) continue;          //Bounds check (global)
-        bool override = (mat[gyc * width + gxc] == mat[ngyc * width + ngxc]) && groupsChunk[lyc * ChunkSize + lxc] > groups[ngyc * width + ngxc];
-        if (override) {
-            groupsChunk[lyc * ChunkSize + lxc] = groups[ngyc * width + ngxc];
-            blockStable = false;
+
+        if (mat[gyc * width + gxc] == mat[ngyc * width + ngxc]) {
+            int oldGroup = atomicMin(&groups[gyc * width + gxc], groups[ngyc * width + ngxc]); //Atomicity to prevent race conditions between check and assignment
+            *blockStable = oldGroup != groups[gyc * width + gxc] ? true : *blockStable; //Only mark as non-stable if value was changed
         }
     }
 
