@@ -165,18 +165,20 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
         __syncthreads();
 
         //Chess pattern
-        int lxc = lx * 2 + (ly % 2);            //Local chess x    
-        if (lxc >= ChunkSize) lxc -= ChunkSize; //Faster than modulo? <- THIS CAUSES ENDLESS LOOP BUT SHOULD BE CORRECT??
-        int gxc = blockStartX + lxc;            //Global chess x
+        int lxc = lx * 2 + (ly % 2);    //Local chess x
+        int gxc = blockStartX + lxc;    //Global chess x
+        int lxc1 = lxc + 1;
+        if (lxc1 >= ChunkSize) lxc1 -= ChunkSize; //Faster than modulo?
+        int gxc1 = blockStartX + lxc1;
 
         if (!dirtyNeighbour) {
             propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable);
             __syncthreads();
-            propagate(lxc + 1, ly, gxc + 1, gy, width, height, mat, groupsChunk, &blockStable);
+            propagate(lxc1, ly, gxc1, gy, width, height, mat, groupsChunk, &blockStable);
         } else {
             globally_propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable, groups);
             __syncthreads();
-            globally_propagate(lxc + 1, ly, gxc + 1, gy, width, height, mat, groupsChunk, &blockStable, groups);
+            globally_propagate(lxc1, ly, gxc1, gy, width, height, mat, groupsChunk, &blockStable, groups);
         }
 
         __syncthreads(); //Sync all at the end of an iteration
