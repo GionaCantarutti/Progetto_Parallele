@@ -99,7 +99,7 @@ __device__ void serialCheckDirty(int ll, bool* dirtyNeighbour, ChunkStatus* stat
 }
 
 //ToDo: probs there's a way to get block count without passing it as argument
-__global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStatus* status_matrix, dim3 numBlocks, int* dirtyBlocks, bool initGroups) {
+__global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStatus* status_matrix, dim3 numBlocks, int* dirtyBlocks) {
 
     //Each thread will handle two cells each (hence the doubled indexes). In the memory management part we split the 32x32 chunk into two 16x32 sections.
     //In the iterative algorithm part instead we split the 32x32 chunk into a chessboard pattern of alternating cells so that we can avoid race dontions.
@@ -144,13 +144,8 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
     int big = width * height + 100;
 
     //Init shared memory groups
-    if (initGroups) {
-        groupsChunk[ll] = validGlobal ? gl : big;
-        groupsChunk[ll1] = validGlobal1 ? gl1 : big;
-    } else {
-        groupsChunk[ll] = validGlobal ? groups[gl] : big;
-        groupsChunk[ll1] = validGlobal1 ? groups[gl1] : big;
-    }
+    groupsChunk[ll] = validGlobal ? groups[gl] : big;
+    groupsChunk[ll1] = validGlobal1 ? groups[gl1] : big;
 
     __syncthreads(); //Await end of initialization
 
@@ -158,17 +153,20 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
     
     do {
 
+        if (ll == 0) {
+            blockStable = true;
+            dirtyNeighbour = false;
+        }
         //ToDo: only check this every so often?
         serialCheckDirty(ll, &dirtyNeighbour, status_matrix, numBlocks, dirtyBlocks);
 
-        if (ll == 0) blockStable = true;
         __syncthreads();
 
         //Chess pattern
         int lxc = lx * 2 + (ly % 2);    //Local chess x
         int gxc = gx + (lxc - lx);      //Global chess x
 
-        if (!dirtyNeighbour || initGroups) {
+        if (!dirtyNeighbour) {
             if (validGlobal) propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable);
             __threadfence_block();
             if (validGlobal) propagate(lxc + 1, ly, gxc + 1, gy, width, height, mat, groupsChunk, &blockStable);
@@ -176,7 +174,6 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
             if (validGlobal) globally_propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable, groups);
             __threadfence_block();
             if (validGlobal) globally_propagate(lxc + 1, ly, gxc + 1, gy, width, height, mat, groupsChunk, &blockStable, groups);
-            dirtyNeighbour = false;
         }
 
         __threadfence_block();
@@ -185,7 +182,7 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
     } while (!blockStable);
     
     __threadfence();
-    if (dirtyBlock || initGroups) {
+    if (dirtyBlock) {
         //Race conditions shoulnd't be a concern here
         if (validGlobal) groups[gl] = groupsChunk[ll];   //Copy stable chunk to global
         if (validGlobal1) groups[gl1] = groupsChunk[ll1];
@@ -214,7 +211,9 @@ GroupMatrix cuda_cc(CharMatrix* mat) {
 
     //Initialize and allocate device memory for groups
     int* d_groups;
+    GroupMatrix h_groups = initGroupsUnique(mat->width, mat->height);
     HANDLE_ERROR(cudaMalloc((void**)&d_groups, mat->height * mat->width * sizeof(int)));
+    HANDLE_ERROR(cudaMemcpy(d_groups, (void*)(h_groups.groups), h_groups.width * h_groups.height * sizeof(int), cudaMemcpyHostToDevice));
 
     //Initialize and allocate device memory for character matrix
     char* d_mat;
@@ -247,30 +246,24 @@ GroupMatrix cuda_cc(CharMatrix* mat) {
     HANDLE_ERROR(cudaMalloc((void**)&d_dirty, sizeof(int)));
     HANDLE_ERROR(cudaMemcpy(d_dirty, &h_dirty, sizeof(int), cudaMemcpyHostToDevice));
 
-    GroupMatrix h_groups = initGroupsUnique(mat->width, mat->height);
-
-    bool init = true;
     int iters = 0;
     bool err = false;
 
     //Loop until stable
-    while (h_dirty > 0) {
+    while (h_dirty > 0 && !err) {
 
         printf("Dirty blocks: %d\n", h_dirty);
         
-        cuda_cc<<<numBlocks, numThreads>>>(d_groups, d_mat, mat->width, mat->height, d_status_matrix, numBlocks, d_dirty, init);
+        cuda_cc<<<numBlocks, numThreads>>>(d_groups, d_mat, mat->width, mat->height, d_status_matrix, numBlocks, d_dirty);
         HANDLE_ERROR(cudaMemcpy(&h_dirty, d_dirty, sizeof(int), cudaMemcpyDeviceToHost));
         cudaDeviceSynchronize();
         
         checkCUDAError("call of cuda_cc kernel");
 
-        init = false;
-
         iters++;
         if (iters > numBlocks.x * numBlocks.y * 5) {
             printf("Something went wrong! Quitting and logging solution\n");
             err = true;
-            break;
         }
 
     }
