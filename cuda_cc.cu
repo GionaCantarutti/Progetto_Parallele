@@ -267,7 +267,7 @@ GroupMatrix cuda_cc(CharMatrix* mat) {
         checkCUDAError("call of cuda_cc kernel");
 
         iters++;
-        if (iters > numBlocks.x * numBlocks.y * 5) {
+        if (iters > numBlocks.x * numBlocks.y * 100) { //Cap of 100 kernel iterations per block
             printf("Something went wrong! Quitting and logging solution\n");
             err = true;
         }

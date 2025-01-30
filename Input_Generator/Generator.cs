@@ -13,8 +13,10 @@ namespace Generator {
 
             inputs.Add((AllBlack(1000, 1000), "all_black"));
             inputs.Add((RandomNoise(1000,1000), "random_noise"));
-            inputs.Add((RandomStreaks(1000,1000,1f/20f), "random_streaks"));
-            inputs.Add((RandomStreaks(1000,1000,1f/60f), "sparse_streaks"));
+            inputs.Add((RandomStreaks(1000,1000,1f/20f, 1f/20f), "random_streaks"));
+            inputs.Add((RandomStreaks(1000,1000,1f/20f, 1f/60f), "sparse_streaks"));
+            inputs.Add((ChessBoard(1000, 1000), "chessboard"));
+            inputs.Add((Snake(1000, 1000), "long_snake"));
 
             return inputs;
         }
@@ -55,7 +57,7 @@ namespace Generator {
 
         }
 
-        public static bool[,] RandomStreaks(int width, int height, float switchChance) {
+        public static bool[,] RandomStreaks(int width, int height, float switchChanceA, float switchChanceB) {
 
             bool[,] input = AllBlack(width, height);
 
@@ -66,13 +68,45 @@ namespace Generator {
             for (int i = 0; i < width; i++) {
                 for (int j = 0; j < height; j++) {
                     double r = rnd.NextDouble();
-                    if (r < switchChance) state = !state;
+                    float c = state ? switchChanceA : switchChanceB;
+                    if (r < c) state = !state;
                     input[i,j] = state;
                 }
             }
 
             return input;
 
+        }
+
+        public static bool[,] ChessBoard(int width, int height) {
+            bool[,] chess = new bool[width,height];
+
+            for (int i = 0; i < width; i++) {
+                bool state = i % 2 == 0;
+                for (int j = 0; j < height; j++) {
+                    chess[i,j] = state;
+                    state = !state;
+                }
+            }
+
+            return chess;
+
+        }
+
+        public static bool[,] Snake(int width, int height) {
+            bool[,] chess = AllBlack(width, height);
+
+            for (int i = 0; i < width; i++) {
+                for (int j = 0; j < height; j++) {
+                    if (j % 2 == 1) {
+                        chess[i,j] = true;
+                    } else {
+                        if ((i == 0 && (j/2) % 2 == 0)|| i == height - 1 && (j/2) % 2 == 1) chess[i,j] = true;
+                    }
+                }
+            }
+
+            return chess;
         }
 
     }

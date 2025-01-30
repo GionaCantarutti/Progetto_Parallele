@@ -1,7 +1,20 @@
+#include <time.h>
+#include <sys\timeb.h>
 #include "benchmark.h"
 #include "char_matrix.h"
 #include "serial_cc.h"
 #include "cuda_cc.h"
+
+#define SEC_TO_NS(sec) ((sec)*1000000000)
+
+/// Get a time stamp in nanoseconds.
+uint64_t nanos()
+{
+    struct timespec ts;
+    timespec_get(&ts, TIME_UTC);
+    uint64_t ns = SEC_TO_NS((uint64_t)ts.tv_sec) + (uint64_t)ts.tv_nsec;
+    return ns;
+}
 
 void benchmarkSerial(const char** tests, int testCount) {
 
@@ -107,8 +120,8 @@ bool isMatching(GroupMatrix* a, GroupMatrix* b) {
             if (current->from == a_val) {
                 if (current->into != b_val) {
                     freeMappings(map);
-                    printf("Found missmatch at (%d, %d)\n", i % a->width, i / a->width);
-                    printf("A's value maps to %d but %d is expected", current->into, b_val);
+                    printf("\nFound missmatch at (%d, %d)\n", i % a->width, i / a->width);
+                    printf("A's value maps to %d but %d is expected\n", current->into, b_val);
                     return false;
                 }
                 found = true;
@@ -129,6 +142,66 @@ bool isMatching(GroupMatrix* a, GroupMatrix* b) {
     return true;
 }
 
+//Doesn't check for injectivity!
+bool halfMatch(GroupMatrix* a, GroupMatrix* b) {
+    if (a->width != b->width || a->height != b->height) return false;
+
+    int* mapping;
+    int max_ID = a->width * a->height + 10;
+    mapping = (int*)malloc(max_ID * sizeof(int));
+    for (int i = 0; i < max_ID; i++) mapping[i] = -1;
+
+    for (int i = 0; i < a->width * a->height; i++) {
+        if (mapping[a->groups[i]] == -1) { //If a's group ID is not mapped yet, map it
+            mapping[a->groups[i]] = b->groups[i];
+        } else { //Otherwise make sure that a's group maps to b's group
+            if (mapping[a->groups[i]] != b->groups[i]) {
+                free(mapping);
+                return false;
+            }
+        }
+    }
+
+    free(mapping);
+
+    return true;
+}
+
+bool isMatchingFast(GroupMatrix* a, GroupMatrix* b) {
+    return halfMatch(a, b) && halfMatch(b, a);
+}
+
+void runAndBenchmark(const char** tests, int testCount) {
+
+    for (int i = 0; i < testCount; i++) {
+
+        char* inPath = (char*)malloc(sizeof(char) * (strlen(tests[i]) + 8) ); //7 for "Inputs/" and 1 for the "\0"
+        inPath = strcat(strcpy(inPath, "Inputs/"), tests[i]);
+
+        CharMatrix test = readInputFromFile(inPath);
+
+        free(inPath);
+        printf("Benchmarking \"%s\"...\n", tests[i]);
+
+        uint64_t start, end;
+
+        start = nanos();
+        GroupMatrix cpu_res = cc_bfs(&test);
+        end = nanos();
+        double cpu_time = (double)(end - start)/(double)1000000;
+        start = nanos();
+        GroupMatrix cuda_res = cuda_cc(&test);
+        end = nanos();
+        double gpu_time = (double)(end - start)/(double)1000000;
+
+        printf("CPU time: %.1fms\t| Device time: %.3fms\n", cpu_time, gpu_time);
+
+        freeMat(&test); freeGroups(&cpu_res); freeGroups(&cuda_res);
+
+    }
+
+}
+
 //Runs the tests both on CPU and GPU and verifies that both produce the same result
 void runAndVerify(const char** tests, int testCount) {
 
@@ -140,12 +213,12 @@ void runAndVerify(const char** tests, int testCount) {
         CharMatrix test = readInputFromFile(inPath);
 
         free(inPath);
+        printf("Testing \"%s\"...\t\t", tests[i]);
 
         GroupMatrix cpu_res = cc_bfs(&test);
         GroupMatrix cuda_res = cuda_cc(&test);
 
-        printf("Testing \"%s\"...\n", tests[i]);
-        bool match = isMatching(&cpu_res, &cuda_res);
+        bool match = isMatchingFast(&cpu_res, &cuda_res);
         printf("%s", match ? "Results match!\n" : "Results do not match!\n");
 
         if (!match) {
