@@ -75,7 +75,7 @@ __device__ void globally_propagate(int lxc, int lyc, int gxc, int gyc, int width
 
 //Check if there's a dirty neighbouring chunk. If so lower the corresponding directional dirty flag on that chunk
 __device__ void serialCheckDirty(int ll, bool* dirtyNeighbour, ChunkStatus* status_matrix, dim3 numBlocks, int* dirtyBlocks) {
-    //Thread 0 checks for dirty neighbouring blocks
+    __threadfence(); //Prevent rare inconsistencies when undirtying a chunk as its still being written to
     for (int i = 0; i < 4; i++) {
         int nx = blockIdx.x + dx[i];    //New x value
         int ny = blockIdx.y + dy[i];    //New y value
@@ -187,6 +187,8 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
         //Race conditions shoulnd't be a concern here
         if (validGlobal) groups[gl] = groupsChunk[ll];   //Copy stable chunk to global
         if (validGlobal1) groups[gl1] = groupsChunk[ll1];
+
+        __syncthreads(); //Only proceed to mark as dirty once writing is fully done
 
         if (ll == 0) {
             // Calculate valid neighbors. If a neighbour in one direction doesn't exist the dirty flag shoulnd't be raised because nothing
