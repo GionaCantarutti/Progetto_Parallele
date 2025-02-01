@@ -156,6 +156,7 @@ bool halfMatch(GroupMatrix* a, GroupMatrix* b) {
             mapping[a->groups[i]] = b->groups[i];
         } else { //Otherwise make sure that a's group maps to b's group
             if (mapping[a->groups[i]] != b->groups[i]) {
+                printf("Missmatch found at (%d, %d). %d should map to %d but is instead mapped to %d... ", i % a->width, i / a->width, a->groups[i], b->groups[i], mapping[a->groups[i]]);
                 free(mapping);
                 return false;
             }

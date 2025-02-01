@@ -73,31 +73,27 @@ __device__ void globally_propagate(int lxc, int lyc, int gxc, int gyc, int width
 
 }
 
-//Makes thread 0 check if there's a dirty neighbouring chunk. If so lower the corresponding directional dirty flag on that chunk
-//Syncs all threads before returning
+//Check if there's a dirty neighbouring chunk. If so lower the corresponding directional dirty flag on that chunk
 __device__ void serialCheckDirty(int ll, bool* dirtyNeighbour, ChunkStatus* status_matrix, dim3 numBlocks, int* dirtyBlocks) {
     //Thread 0 checks for dirty neighbouring blocks
-    if (ll == 0) {
-        for (int i = 0; i < 4; i++) {
-            int nx = blockIdx.x + dx[i];    //New x value
-            int ny = blockIdx.y + dy[i];    //New y value
-            if (ny >= numBlocks.y || ny < 0 || nx >= numBlocks.x || nx < 0) continue; //Boundary check
-            int index = ny * numBlocks.x + nx;
+    for (int i = 0; i < 4; i++) {
+        int nx = blockIdx.x + dx[i];    //New x value
+        int ny = blockIdx.y + dy[i];    //New y value
+        if (ny >= numBlocks.y || ny < 0 || nx >= numBlocks.x || nx < 0) continue; //Boundary check
+        int index = ny * numBlocks.x + nx;
 
-            int mask = ~bdr[i];
+        int mask = ~bdr[i];
 
-            ChunkStatus old_status = (ChunkStatus)atomicAnd((int*)&status_matrix[index], mask);
-            bool was_dirty = (old_status & bdr[i]) != 0;
+        ChunkStatus old_status = (ChunkStatus)atomicAnd((int*)&status_matrix[index], mask);
+        bool was_dirty = (old_status & bdr[i]) != 0;
 
-            if (was_dirty) {
-                *dirtyNeighbour = true;
-                if ((old_status & mask) == 0) { //If the last dirty bit has been cleared by this operation decrement dirtyBlocks
-                    atomicAdd(dirtyBlocks, -1);
-                }
+        if (was_dirty) {
+            *dirtyNeighbour = true;
+            if ((old_status & mask) == 0) { //If the last dirty bit has been cleared by this operation decrement dirtyBlocks
+                atomicAdd(dirtyBlocks, -1);
             }
         }
     }
-    __syncthreads();
 }
 
 //ToDo: probs there's a way to get block count without passing it as argument
@@ -159,10 +155,9 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
         if (ll == 0) {
             blockStable = true;
             dirtyNeighbour = false;
+            //ToDo: only check this every so often?
+            serialCheckDirty(ll, &dirtyNeighbour, status_matrix, numBlocks, dirtyBlocks);
         }
-        //ToDo: only check this every so often?
-        serialCheckDirty(ll, &dirtyNeighbour, status_matrix, numBlocks, dirtyBlocks);
-
         __syncthreads();
 
         //Chess pattern
@@ -181,18 +176,16 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
             globally_propagate(lxc1, ly, gxc1, gy, width, height, mat, groupsChunk, &blockStable, groups);
         }
 
-        __syncthreads(); //Sync all at the end of an iteration
+        //__syncthreads(); //Sync all at the end of an iteration
         if (!blockStable) dirtyBlock = true;
         __syncthreads();
     } while (!blockStable);
     
-    __threadfence();
     if (dirtyBlock) {
         //Race conditions shoulnd't be a concern here
         if (validGlobal) groups[gl] = groupsChunk[ll];   //Copy stable chunk to global
         if (validGlobal1) groups[gl1] = groupsChunk[ll1];
 
-        __syncthreads();
         if (ll == 0) {
             // Calculate valid neighbors. If a neighbour in one direction doesn't exist the dirty flag shoulnd't be raised because nothing
             // would be able to then lower it again
