@@ -188,8 +188,6 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
         if (validGlobal) groups[gl] = groupsChunk[ll];   //Copy stable chunk to global
         if (validGlobal1) groups[gl1] = groupsChunk[ll1];
 
-        __syncthreads(); //Only proceed to mark as dirty once writing is fully done
-
         if (ll == 0) {
             // Calculate valid neighbors. If a neighbour in one direction doesn't exist the dirty flag shoulnd't be raised because nothing
             // would be able to then lower it again
