@@ -10,7 +10,7 @@ int main() {
     //runAndBenchmark(tests, nTests, true);
     //runAndVerify(tests, nTests);
 
-    batchBenchmark(tests, nTests, 4, true, "chess_v1.txt");
+    batchBenchmark(tests, nTests, 20, true, "chess_v1.txt");
 
     return 0;
 }
