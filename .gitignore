@@ -14,3 +14,4 @@ Inputs/*
 Outputs/Serial/*
 Outputs/CUDA/*
 Outputs/Errors/*
+Outputs/Benchmarks/*

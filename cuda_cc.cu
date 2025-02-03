@@ -33,6 +33,7 @@ __constant__ const int dy[] = {0, 0, 1, -1};
 //Map delta index to cardinal direction in reverse
 __constant__ const int bdr[] = {1 << 3, 1 << 1, 1 << 0, 1 << 2};
 
+//ToDo: add __restrict__ here and on globally_propagate
 __device__ void propagate(int lxc, int lyc, int gxc, int gyc, int width, int height, char* mat, int groupsChunk[ChunkSize * ChunkSize], bool* blockStable) {
 
     if (gxc >= width || gyc >= height) return; //Bounds check
@@ -40,6 +41,7 @@ __device__ void propagate(int lxc, int lyc, int gxc, int gyc, int width, int hei
     for (int i = 0; i < 4; i++) { //Loop over 4 neighbours
         int nlxc = lxc + dx[i]; int ngxc = gxc + dx[i];
         int nlyc = lyc + dy[i]; int ngyc = gyc + dy[i];
+        //ToDo: maybe we can prevent the warp divergence caused here?
         if (nlxc >= ChunkSize || nlyc >= ChunkSize || nlxc < 0 || nlyc < 0) continue;   //Bounds check (local)
         if (ngxc >= width || ngyc >= height || ngxc < 0 || ngyc < 0) continue;          //Bounds check (global)
 

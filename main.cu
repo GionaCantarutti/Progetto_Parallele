@@ -7,8 +7,10 @@ int main() {
     const int nTests = 6;
     const char* tests[] = {"all_black.txt", "random_noise.txt", "random_streaks.txt", "sparse_streaks.txt", "long_snake.txt", "chessboard.txt"};
 
-    //runAndBenchmark(tests, nTests);
-    runAndVerify(tests, nTests);
+    //runAndBenchmark(tests, nTests, true);
+    //runAndVerify(tests, nTests);
+
+    batchBenchmark(tests, nTests, 4, true, "chess_v1.txt");
 
     return 0;
 }

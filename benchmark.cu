@@ -172,7 +172,12 @@ bool isMatchingFast(GroupMatrix* a, GroupMatrix* b) {
     return halfMatch(a, b) && halfMatch(b, a);
 }
 
-void runAndBenchmark(const char** tests, int testCount) {
+BenchmarkRun runAndBenchmark(const char** tests, int testCount, bool verify) {
+
+    BenchmarkRun run;
+    run.results = (BenchmarkInstance*)malloc(testCount * sizeof(BenchmarkInstance));
+    run.tests = (char**)malloc(testCount * sizeof(char*));
+    run.nTests = testCount;
 
     for (int i = 0; i < testCount; i++) {
 
@@ -182,24 +187,83 @@ void runAndBenchmark(const char** tests, int testCount) {
         CharMatrix test = readInputFromFile(inPath);
 
         free(inPath);
-        printf("Benchmarking \"%s\"...\n", tests[i]);
+        printf("Benchmarking \"%s\"...\t", tests[i]);
 
         uint64_t start, end;
+        BenchmarkInstance result;
 
         start = nanos();
         GroupMatrix cpu_res = cc_bfs(&test);
         end = nanos();
-        double cpu_time = (double)(end - start)/(double)1000000;
+        result.serial_time = (double)(end - start)/(double)1000000;
         start = nanos();
         GroupMatrix cuda_res = cuda_cc(&test);
         end = nanos();
-        double gpu_time = (double)(end - start)/(double)1000000;
+        result.cuda_time = (double)(end - start)/(double)1000000;
 
-        printf("CPU time: %.1fms\t| Device time: %.3fms\n", cpu_time, gpu_time);
+        if (verify) {
+            bool match = isMatchingFast(&cpu_res, &cuda_res);
+            result.is_matching = match;
+            printf("%s", match ? "Results match!\n" : "Results do not match!\n");
+
+            if (!match) {
+                char* errPath = (char*)malloc(sizeof(char) * (strlen(tests[i]) + 30) ); //21 for "Outputs/Errors/missmatch_cpu_" and 1 for the "\0"
+                errPath = strcat(strcpy(errPath, "Outputs/Errors/missmatch_cpu_"), tests[i]);
+                saveGroupMatrixToFile(&cpu_res, errPath);
+                errPath = strcat(strcpy(errPath, "Outputs/Errors/missmatch_gpu_"), tests[i]);
+                saveGroupMatrixToFile(&cuda_res, errPath);
+                free(errPath);
+            }
+        } else {
+            result.is_matching = -1;
+            printf("\n");
+        }
+
+        printf("CPU time: %.1fms\t| Device time: %.3fms\n", result.serial_time, result.cuda_time);
+
+        run.results[i] = result;
+        run.tests[i] = (char*)tests[i];
 
         freeMat(&test); freeGroups(&cpu_res); freeGroups(&cuda_res);
 
     }
+
+    return run;
+
+}
+
+void batchBenchmark(const char** tests, int testCount, int reps, bool verify, const char* batchName) {
+
+    char* filePath = (char*)malloc(sizeof(char) * (strlen(batchName) + 20) ); //21 for "Outputs/Benchmarks/" and 1 for the "\0"
+    filePath = strcat(strcpy(filePath, "Outputs/Benchmarks/"), batchName);
+
+    FILE* file = fopen(filePath, "w"); //ToDo: support for name changing
+    if (!file) {
+        perror("Error opening file");
+        return;
+    }
+
+    free(filePath);
+
+    fprintf(file, "test_name, repetition, serial_time, cuda_time, is_matching\n");
+
+    for (int i = 0; i < reps; i++) {
+
+        printf("\nRepetition %d of %d (index %d)...\n", i+1, reps, i);
+
+        BenchmarkRun run = runAndBenchmark(tests, testCount, verify);
+
+        for (int j = 0; j < run.nTests; j++) {
+
+            BenchmarkInstance res = run.results[j];
+
+            fprintf(file, "%s, %d, %.1f, %.1f, %d\n", run.tests[j], i, res.serial_time, res.cuda_time, res.is_matching);
+
+        }
+
+    }
+
+    fclose(file);
 
 }
 
