@@ -3,7 +3,7 @@
 
 #include "char_matrix.h"
 
-GroupMatrix cuda_cc(CharMatrix* mat);
+GroupMatrix cuda_cc(const CharMatrix* __restrict__ mat);
 
 
 #endif

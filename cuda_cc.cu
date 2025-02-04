@@ -33,8 +33,7 @@ __constant__ const int dy[] = {0, 0, 1, -1};
 //Map delta index to cardinal direction in reverse
 __constant__ const int bdr[] = {1 << 3, 1 << 1, 1 << 0, 1 << 2};
 
-//ToDo: add __restrict__ here and on globally_propagate
-__device__ void propagate(int lxc, int lyc, int gxc, int gyc, int width, int height, char* mat, int groupsChunk[ChunkSize * ChunkSize], bool* blockStable) {
+__device__ void propagate(int lxc, int lyc, int gxc, int gyc, int width, int height, const char* __restrict__ mat, int groupsChunk[ChunkSize * ChunkSize], bool* __restrict__ blockStable) {
 
     if (gxc >= width || gyc >= height) return; //Bounds check
 
@@ -56,7 +55,7 @@ __device__ void propagate(int lxc, int lyc, int gxc, int gyc, int width, int hei
 }
 
 //Propagate but can access global groups and propagate from that to the local groupsChunk
-__device__ void globally_propagate(int lxc, int lyc, int gxc, int gyc, int width, int height, char* mat, int groupsChunk[ChunkSize * ChunkSize], bool* blockStable, int* groups) {
+__device__ void globally_propagate(int lxc, int lyc, int gxc, int gyc, int width, int height, const char* __restrict__ mat, int groupsChunk[ChunkSize * ChunkSize], bool* __restrict__ blockStable, const int* __restrict__ groups) {
 
     if (gxc >= width || gyc >= height) return; //Bounds check
 
@@ -76,7 +75,7 @@ __device__ void globally_propagate(int lxc, int lyc, int gxc, int gyc, int width
 }
 
 //Check if there's a dirty neighbouring chunk. If so lower the corresponding directional dirty flag on that chunk
-__device__ void serialCheckDirty(int ll, bool* dirtyNeighbour, ChunkStatus* status_matrix, dim3 numBlocks, int* dirtyBlocks) {
+__device__ void serialCheckDirty(int ll, bool* __restrict__ dirtyNeighbour, ChunkStatus* __restrict__ status_matrix, dim3 numBlocks, int* __restrict__ dirtyBlocks) {
     __threadfence(); //Prevent rare inconsistencies when undirtying a chunk as its still being written to
     for (int i = 0; i < 4; i++) {
         int nx = blockIdx.x + dx[i];    //New x value
@@ -99,7 +98,7 @@ __device__ void serialCheckDirty(int ll, bool* dirtyNeighbour, ChunkStatus* stat
 }
 
 //ToDo: probs there's a way to get block count without passing it as argument
-__global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStatus* status_matrix, dim3 numBlocks, int* dirtyBlocks) {
+__global__ void cuda_cc(int* groups, const char* __restrict__ mat, int width, int height, ChunkStatus* __restrict__ status_matrix, dim3 numBlocks, int* __restrict__ dirtyBlocks) {
 
     //Each thread will handle two cells each (hence the doubled indexes). In the memory management part we split the 32x32 chunk into two 16x32 sections.
     //In the iterative algorithm part instead we split the 32x32 chunk into a chessboard pattern of alternating cells so that we can avoid race dontions.
@@ -206,7 +205,7 @@ __global__ void cuda_cc(int* groups, char* mat, int width, int height, ChunkStat
     
 }
 
-GroupMatrix cuda_cc(CharMatrix* mat) {
+GroupMatrix cuda_cc(const CharMatrix* __restrict__ mat) {
 
     dim3 numBlocks( (mat->width + ChunkSize - 1) / ChunkSize, (mat->height + ChunkSize - 1) / ChunkSize );
     dim3 numThreads(ChunkSize/2, ChunkSize);
