@@ -33,14 +33,14 @@ __constant__ const int dy[] = {0, 0, 1, -1};
 //Map delta index to cardinal direction in reverse
 __constant__ const int bdr[] = {1 << 3, 1 << 1, 1 << 0, 1 << 2};
 
-__device__ void propagate_min(char centerChar, char neighChar, int* __restrict__ centerGID, int neighGID, bool* __restrict__ blockStable) {
+__device__ int propagate_min(char centerChar, char neighChar, int centerGID, int neighGID) {
 
-    if (centerChar == neighChar) {
-        if (*centerGID > neighGID) { //Safe thanks to chessboard pattern
-            *centerGID = neighGID;
-            *blockStable = false;
-        }
-    }
+    int mask = -(int)(centerChar == neighChar); //Mask cases where chars are different
+    int diff = centerGID - neighGID;
+    int sign = diff >> 31;
+    int minCandidate = centerGID - (diff & ~sign);
+
+    return (minCandidate & mask) | (centerGID & ~mask);
 
 }
 
@@ -48,16 +48,22 @@ __device__ void propagate(int lxc, int lyc, int gxc, int gyc, int width, int hei
 
     if (gxc >= width || gyc >= height) return; //Bounds check
 
+    #pragma unroll
     for (int i = 0; i < 4; i++) { //Loop over 4 neighbours
         int nlxc = lxc + dx[i]; int ngxc = gxc + dx[i];
         int nlyc = lyc + dy[i]; int ngyc = gyc + dy[i];
+
         //ToDo: maybe we can prevent the warp divergence caused here?
-        if (!dirtyNeighbour & (nlxc >= ChunkSize || nlyc >= ChunkSize || nlxc < 0 || nlyc < 0)) continue;   //Bounds check (local)
+        if (!dirtyNeighbour && (nlxc >= ChunkSize || nlyc >= ChunkSize || nlxc < 0 || nlyc < 0)) continue;   //Bounds check (local)
         if (ngxc >= width || ngyc >= height || ngxc < 0 || ngyc < 0) continue;          //Bounds check (global)
 
-        int read_from = dirtyNeighbour ? groups[ngyc * width + ngxc] : groupsChunk[nlyc * ChunkSize + nlxc];
+        int neighGID = dirtyNeighbour ? groups[ngyc * width + ngxc] : groupsChunk[nlyc * ChunkSize + nlxc];
 
-        propagate_min(mat[gyc * width + gxc], mat[ngyc * width + ngxc], &groupsChunk[lyc * ChunkSize + lxc], read_from, blockStable);
+        int newGID = propagate_min(mat[gyc * width + gxc], mat[ngyc * width + ngxc], groupsChunk[lyc * ChunkSize + lxc], neighGID);
+        if (newGID < groupsChunk[lyc * ChunkSize + lxc]) {
+            groupsChunk[lyc * ChunkSize + lxc] = newGID;
+            *blockStable = false;
+        }
 
     }
 
