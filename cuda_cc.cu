@@ -33,7 +33,18 @@ __constant__ const int dy[] = {0, 0, 1, -1};
 //Map delta index to cardinal direction in reverse
 __constant__ const int bdr[] = {1 << 3, 1 << 1, 1 << 0, 1 << 2};
 
-__device__ void propagate(int lxc, int lyc, int gxc, int gyc, int width, int height, const char* __restrict__ mat, int groupsChunk[ChunkSize * ChunkSize], bool* __restrict__ blockStable) {
+__device__ void propagate_min(char centerChar, char neighChar, int* __restrict__ centerGID, int neighGID, bool* __restrict__ blockStable) {
+
+    if (centerChar == neighChar) {
+        if (*centerGID > neighGID) { //Safe thanks to chessboard pattern
+            *centerGID = neighGID;
+            *blockStable = false;
+        }
+    }
+
+}
+
+__device__ void propagate(int lxc, int lyc, int gxc, int gyc, int width, int height, const char* __restrict__ mat, int groupsChunk[ChunkSize * ChunkSize], bool* __restrict__ blockStable, const int* __restrict__ groups, bool dirtyNeighbour) {
 
     if (gxc >= width || gyc >= height) return; //Bounds check
 
@@ -41,35 +52,13 @@ __device__ void propagate(int lxc, int lyc, int gxc, int gyc, int width, int hei
         int nlxc = lxc + dx[i]; int ngxc = gxc + dx[i];
         int nlyc = lyc + dy[i]; int ngyc = gyc + dy[i];
         //ToDo: maybe we can prevent the warp divergence caused here?
-        if (nlxc >= ChunkSize || nlyc >= ChunkSize || nlxc < 0 || nlyc < 0) continue;   //Bounds check (local)
+        if (!dirtyNeighbour & (nlxc >= ChunkSize || nlyc >= ChunkSize || nlxc < 0 || nlyc < 0)) continue;   //Bounds check (local)
         if (ngxc >= width || ngyc >= height || ngxc < 0 || ngyc < 0) continue;          //Bounds check (global)
 
-        if (mat[gyc * width + gxc] == mat[ngyc * width + ngxc]) {
-            if (groupsChunk[lyc * ChunkSize + lxc] > groupsChunk[nlyc * ChunkSize + nlxc]) { //Safe thanks to chessboard pattern
-                groupsChunk[lyc * ChunkSize + lxc] = groupsChunk[nlyc * ChunkSize + nlxc];
-                *blockStable = false;
-            }
-        }
-    }
+        int read_from = dirtyNeighbour ? groups[ngyc * width + ngxc] : groupsChunk[nlyc * ChunkSize + nlxc];
 
-}
+        propagate_min(mat[gyc * width + gxc], mat[ngyc * width + ngxc], &groupsChunk[lyc * ChunkSize + lxc], read_from, blockStable);
 
-//Propagate but can access global groups and propagate from that to the local groupsChunk
-__device__ void globally_propagate(int lxc, int lyc, int gxc, int gyc, int width, int height, const char* __restrict__ mat, int groupsChunk[ChunkSize * ChunkSize], bool* __restrict__ blockStable, const int* __restrict__ groups) {
-
-    if (gxc >= width || gyc >= height) return; //Bounds check
-
-    for (int i = 0; i < 4; i++) { //Loop over 4 neighbours
-        int ngxc = gxc + dx[i];
-        int ngyc = gyc + dy[i];
-        if (ngxc >= width || ngyc >= height || ngxc < 0 || ngyc < 0) continue;          //Bounds check (global)
-
-        if (mat[gyc * width + gxc] == mat[ngyc * width + ngxc]) {
-            if (groupsChunk[lyc * ChunkSize + lxc] > groups[ngyc * width + ngxc]) { //Safe thanks to chessboard pattern
-                groupsChunk[lyc * ChunkSize + lxc] = groups[ngyc * width + ngxc];
-                *blockStable = false;
-            }
-        }
     }
 
 }
@@ -167,15 +156,9 @@ __global__ void cuda_cc(int* groups, const char* __restrict__ mat, int width, in
         int lxc1 = lx * 2 + ((ly + 1) % 2);
         int gxc1 = blockStartX + lxc1;
 
-        if (!dirtyNeighbour) {
-            propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable);
-            __syncthreads();
-            propagate(lxc1, ly, gxc1, gy, width, height, mat, groupsChunk, &blockStable);
-        } else {
-            globally_propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable, groups);
-            __syncthreads();
-            globally_propagate(lxc1, ly, gxc1, gy, width, height, mat, groupsChunk, &blockStable, groups);
-        }
+        propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable, groups, dirtyNeighbour);
+        __syncthreads();
+        propagate(lxc1, ly, gxc1, gy, width, height, mat, groupsChunk, &blockStable, groups, dirtyNeighbour);
 
         //__syncthreads(); //Sync all at the end of an iteration
         if (!blockStable) dirtyBlock = true;

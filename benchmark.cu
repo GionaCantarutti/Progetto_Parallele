@@ -3,7 +3,7 @@
 #include "benchmark.h"
 #include "char_matrix.h"
 #include "serial_cc.h"
-#include "cuda_cc.h"
+#include "cuda_cc.cuh"
 
 #define SEC_TO_NS(sec) ((sec)*1000000000)
 
