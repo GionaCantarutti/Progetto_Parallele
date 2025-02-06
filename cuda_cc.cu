@@ -105,8 +105,8 @@ __global__ void cuda_cc(int* groups, const char* __restrict__ mat, int width, in
     int lx = threadIdx.x; 	                            //Local x index
     int ly = threadIdx.y;                               //Local y index
     int ll = ly * ChunkSize + lx;                       //Local linearized index
-    int lx1 = threadIdx.x + (ChunkSize/2);              //Second local x index
-    int ly1 = ly;                                       //Second local y index
+    int lx1 = lx;                                       //Second local x index
+    int ly1 = ly + (ChunkSize/2);                       //Second local y index
     int ll1 = ly1 * ChunkSize + lx1;                    //Second local linearized index
     
     int gx = blockStartX + lx; 	                        //Global x index
@@ -122,8 +122,14 @@ __global__ void cuda_cc(int* groups, const char* __restrict__ mat, int width, in
     bool validGlobal = true;                            //Is the first set of coordinates globally valid?
     bool validGlobal1 = true;                           //Is the second set of coordinates globally valid?
 
-    int glg = gy * (gp / sizeof(int)) + gx;                    //Global linearized index accounting for groups pitch
-    int glg1 = gy1 * (gp / sizeof(int)) + gx1;                 //Second global linearized index accounting for groups pitch
+    int glg = gy * (gp / sizeof(int)) + gx;             //Global linearized index accounting for groups pitch
+    int glg1 = gy1 * (gp / sizeof(int)) + gx1;          //Second global linearized index accounting for groups pitch
+
+    //Chess pattern (vertical)
+    int lyc = ly * 2 + (lx % 2);                        //Local chess y
+    int gyc = blockStartY + lyc;                        //Global chess y
+    int lyc1 = ly * 2 + ((lx + 1) % 2);
+    int gyc1 = blockStartY + lyc1;
 
     //Initialize flags
     if (ll == 0) {
@@ -158,15 +164,9 @@ __global__ void cuda_cc(int* groups, const char* __restrict__ mat, int width, in
         }
         __syncthreads();
 
-        //Chess pattern
-        int lxc = lx * 2 + (ly % 2);    //Local chess x
-        int gxc = blockStartX + lxc;    //Global chess x
-        int lxc1 = lx * 2 + ((ly + 1) % 2);
-        int gxc1 = blockStartX + lxc1;
-
-        propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable, groups, dirtyNeighbour, mp / sizeof(char), gp / sizeof(int));
+        propagate(lx, lyc, gx, gyc, width, height, mat, groupsChunk, &blockStable, groups, dirtyNeighbour, mp / sizeof(char), gp / sizeof(int));
         __syncthreads();
-        propagate(lxc1, ly, gxc1, gy, width, height, mat, groupsChunk, &blockStable, groups, dirtyNeighbour, mp / sizeof(char), gp / sizeof(int));
+        propagate(lx, lyc1, gx, gyc1, width, height, mat, groupsChunk, &blockStable, groups, dirtyNeighbour, mp / sizeof(char), gp / sizeof(int));
 
         //__syncthreads(); //Sync all at the end of an iteration
         if (!blockStable) dirtyBlock = true;
@@ -199,7 +199,7 @@ __global__ void cuda_cc(int* groups, const char* __restrict__ mat, int width, in
 GroupMatrix cuda_cc(const CharMatrix* __restrict__ mat) {
 
     dim3 numBlocks( (mat->width + ChunkSize - 1) / ChunkSize, (mat->height + ChunkSize - 1) / ChunkSize );
-    dim3 numThreads(ChunkSize/2, ChunkSize);
+    dim3 numThreads(ChunkSize, ChunkSize/2);
 
     //Initialize and allocate device memory for groups
     int* d_groups;
