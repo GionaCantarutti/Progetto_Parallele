@@ -233,20 +233,23 @@ GroupMatrix cuda_cc(const CharMatrix* __restrict__ mat) {
 
     //Dirty count
     int* d_dirty;
-    int h_dirty = numBlocks.x * numBlocks.y; //Corner block isn't dirty to any neighbours at the start
+    int* h_dirty;
+    cudaHostAlloc(&h_dirty, sizeof(int), 0);
+    //cudaHostGetDevicePointer(&d_dirty, h_dirty, 0); Using mapped memory worsens performance considerably
+    *h_dirty = numBlocks.x * numBlocks.y;
     HANDLE_ERROR(cudaMalloc((void**)&d_dirty, sizeof(int)));
-    HANDLE_ERROR(cudaMemcpy(d_dirty, &h_dirty, sizeof(int), cudaMemcpyHostToDevice));
+    HANDLE_ERROR(cudaMemcpy(d_dirty, h_dirty, sizeof(int), cudaMemcpyHostToDevice));
 
     int iters = 0;
     bool err = false;
 
     //Loop until stable
-    while (h_dirty > 0 && !err) {
+    while (*h_dirty > 0 && !err) {
 
-        //printf("Dirty blocks: %d\n", h_dirty);
+        //printf("Dirty blocks: %d\n", *h_dirty);
         
         cuda_cc<<<numBlocks, numThreads>>>(d_groups, d_mat, mat->width, mat->height, d_status_matrix, numBlocks, d_dirty);
-        HANDLE_ERROR(cudaMemcpy(&h_dirty, d_dirty, sizeof(int), cudaMemcpyDeviceToHost));
+        HANDLE_ERROR(cudaMemcpy(h_dirty, d_dirty, sizeof(int), cudaMemcpyDeviceToHost));
         cudaDeviceSynchronize();
         
         checkCUDAError("call of cuda_cc kernel");
