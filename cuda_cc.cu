@@ -117,7 +117,7 @@ __global__ void cuda_cc(int* groups, const char* __restrict__ mat, int width, in
     __shared__ int groupsChunk[ChunkSize * ChunkSize];  //Shared memory for groups of the local chunk
     __shared__ bool blockStable;                        //Is the chunk in a stable configuration?
     __shared__ bool dirtyNeighbour;                     //Are we yet to account for changes in a neighbouring chunk?
-    __shared__ bool dirtyBlock;                         //Has this chunk been changed?
+    volatile __shared__ bool dirtyBlock;                //Has this chunk been changed?
 
     bool validGlobal = true;                            //Is the first set of coordinates globally valid?
     bool validGlobal1 = true;                           //Is the second set of coordinates globally valid?
@@ -165,15 +165,13 @@ __global__ void cuda_cc(int* groups, const char* __restrict__ mat, int width, in
         __syncthreads();
 
         propagate(lx, lyc, gx, gyc, width, height, mat, groupsChunk, &blockStable, groups, dirtyNeighbour, mp / sizeof(char), gp / sizeof(int));
-        __syncthreads();
+        __syncthreads(); //Taking this off doesn't affect the correctness of the solution but causes unecessary propagations to happen worsening performance a bit
         propagate(lx, lyc1, gx, gyc1, width, height, mat, groupsChunk, &blockStable, groups, dirtyNeighbour, mp / sizeof(char), gp / sizeof(int));
 
         //__syncthreads(); //Sync all at the end of an iteration
         if (!blockStable) dirtyBlock = true;
         __syncthreads();
     } while (!blockStable);
-    
-    __threadfence();
     
     if (dirtyBlock) {
         //Race conditions shoulnd't be a concern here
