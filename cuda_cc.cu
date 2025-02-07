@@ -73,6 +73,7 @@ __device__ void propagate(  int lxc, int lyc, int gxc, int gyc, int width, int h
 //Check if there's a dirty neighbouring chunk. If so lower the corresponding directional dirty flag on that chunk
 __device__ void serialCheckDirty(int ll, bool* __restrict__ dirtyNeighbour, ChunkStatus* __restrict__ status_matrix, dim3 numBlocks, int* __restrict__ dirtyBlocks, int sp) {
     __threadfence(); //Prevent rare inconsistencies when undirtying a chunk as its still being written to
+    #pragma unroll
     for (int i = 0; i < 4; i++) {
         int nx = blockIdx.x + dx[i];    //New x value
         int ny = blockIdx.y + dy[i];    //New y value
@@ -126,9 +127,9 @@ __global__ void cc_kernel(int* groups, const char* __restrict__ mat, int width, 
     int glg1 = gy1 * (gp / sizeof(int)) + gx1;          //Second global linearized index accounting for groups pitch
 
     //Chess pattern (vertical)
-    int lyc = ly * 2 + (lx % 2);                        //Local chess y
+    int lyc = ly * 2 + (lx & 1);                        //Local chess y
     int gyc = blockStartY + lyc;                        //Global chess y
-    int lyc1 = ly * 2 + ((lx + 1) % 2);
+    int lyc1 = ly * 2 + ((lx + 1) & 1);
     int gyc1 = blockStartY + lyc1;
 
     //Initialize flags
