@@ -1,6 +1,7 @@
 #include "char_matrix.h"
 
-#define ChunkSize 32    //Has to be divisible by 2
+#define CHUNK_SIZE 32    //Has to be divisible by 2
+#define BLOCK_MULT 1     //How many blocks per SM on each dimension
 
 static void HandleError( cudaError_t err, const char *file, int line ) {
     if (err != cudaSuccess) {
@@ -44,7 +45,7 @@ __device__ int propagate_min(char centerChar, char neighChar, int centerGID, int
 
 }
 
-__device__ void propagate(  int lxc, int lyc, int gxc, int gyc, int width, int height, const char* __restrict__ mat, int groupsChunk[ChunkSize * ChunkSize],
+__device__ void propagate(  int lxc, int lyc, int gxc, int gyc, int width, int height, const char* __restrict__ mat, int groupsChunk[CHUNK_SIZE * CHUNK_SIZE],
                             bool* __restrict__ blockStable, const int* __restrict__ groups, bool dirtyNeighbour, int mp, int gp) {
 
     if (gxc >= width || gyc >= height) return; //Bounds check
@@ -55,14 +56,14 @@ __device__ void propagate(  int lxc, int lyc, int gxc, int gyc, int width, int h
         int nlyc = lyc + dy[i]; int ngyc = gyc + dy[i];
 
         //ToDo: maybe we can prevent the warp divergence caused here?
-        if (!dirtyNeighbour && (nlxc >= ChunkSize || nlyc >= ChunkSize || nlxc < 0 || nlyc < 0)) continue;   //Bounds check (local)
+        if (!dirtyNeighbour && (nlxc >= CHUNK_SIZE || nlyc >= CHUNK_SIZE || nlxc < 0 || nlyc < 0)) continue;   //Bounds check (local)
         if (ngxc >= width || ngyc >= height || ngxc < 0 || ngyc < 0) continue;          //Bounds check (global)
 
-        int neighGID = dirtyNeighbour ? groups[ngyc * gp + ngxc] : groupsChunk[nlyc * ChunkSize + nlxc];
+        int neighGID = dirtyNeighbour ? groups[ngyc * gp + ngxc] : groupsChunk[nlyc * CHUNK_SIZE + nlxc];
 
-        int newGID = propagate_min(mat[gyc * mp + gxc], mat[ngyc * mp + ngxc], groupsChunk[lyc * ChunkSize + lxc], neighGID);
-        if (newGID < groupsChunk[lyc * ChunkSize + lxc]) {
-            groupsChunk[lyc * ChunkSize + lxc] = newGID;
+        int newGID = propagate_min(mat[gyc * mp + gxc], mat[ngyc * mp + ngxc], groupsChunk[lyc * CHUNK_SIZE + lxc], neighGID);
+        if (newGID < groupsChunk[lyc * CHUNK_SIZE + lxc]) {
+            groupsChunk[lyc * CHUNK_SIZE + lxc] = newGID;
             *blockStable = false;
         }
 
@@ -73,6 +74,8 @@ __device__ void propagate(  int lxc, int lyc, int gxc, int gyc, int width, int h
 //Check if there's a dirty neighbouring chunk. If so lower the corresponding directional dirty flag on that chunk
 __device__ void serialCheckDirty(int ll, bool* __restrict__ dirtyNeighbour, ChunkStatus* __restrict__ status_matrix, dim3 numBlocks, int* __restrict__ dirtyBlocks, int sp) {
     __threadfence(); //Prevent rare inconsistencies when undirtying a chunk as its still being written to
+    //ToDo: spread over 4 threads
+    #pragma unroll
     for (int i = 0; i < 4; i++) {
         int nx = blockIdx.x + dx[i];    //New x value
         int ny = blockIdx.y + dy[i];    //New y value
@@ -94,110 +97,119 @@ __device__ void serialCheckDirty(int ll, bool* __restrict__ dirtyNeighbour, Chun
 }
 
 //ToDo: probs there's a way to get block count without passing it as argument
-__global__ void cuda_cc(int* groups, const char* __restrict__ mat, int width, int height, ChunkStatus* __restrict__ status_matrix, dim3 numBlocks, int* __restrict__ dirtyBlocks, size_t gp, size_t mp, size_t sp) {
+__global__ void cuda_cc(int* groups, const char* __restrict__ mat, int width, int height, ChunkStatus* __restrict__ status_matrix, dim3 numBlocks, int* __restrict__ dirtyBlocks, size_t gp, size_t mp, size_t sp, int nChunks) {
 
-    //Each thread will handle two cells each (hence the doubled indexes). In the memory management part we split the 32x32 chunk into two 16x32 sections.
-    //In the iterative algorithm part instead we split the 32x32 chunk into a chessboard pattern of alternating cells so that we can avoid race dontions.
+    //Gride-stride loop. lbi = linearized block index
+    for (int lbi = blockIdx.y * gridDim.x + blockIdx.x; lbi < nChunks; lbi += gridDim.y * gridDim.x) {
 
-    int blockStartX = blockIdx.x * ChunkSize;           // Each block covers 32 columns
-    int blockStartY = blockIdx.y * ChunkSize;           // and 32 rows
+        //Each thread will handle two cells each (hence the doubled indexes). In the memory management part we split the 32x32 chunk into two 16x32 sections.
+        //In the iterative algorithm part instead we split the 32x32 chunk into a chessboard pattern of alternating cells so that we can avoid race dontions.
 
-    int lx = threadIdx.x; 	                            //Local x index
-    int ly = threadIdx.y;                               //Local y index
-    int ll = ly * ChunkSize + lx;                       //Local linearized index
-    int lx1 = lx;                                       //Second local x index
-    int ly1 = ly + (ChunkSize/2);                       //Second local y index
-    int ll1 = ly1 * ChunkSize + lx1;                    //Second local linearized index
-    
-    int gx = blockStartX + lx; 	                        //Global x index
-    int gy = blockStartY + ly;                          //Global y index
-    int gx1 = blockStartX + lx1; 	                    //Second Global x index
-    int gy1 = blockStartY + ly1;                        //Second Global y index
+        int blockStartX = (lbi % gridDim.x) * CHUNK_SIZE;    // Each block covers 32 columns
+        int blockStartY = (lbi / gridDim.x) * CHUNK_SIZE;    // and 32 rows
 
-    __shared__ int groupsChunk[ChunkSize * ChunkSize];  //Shared memory for groups of the local chunk
-    __shared__ bool blockStable;                        //Is the chunk in a stable configuration?
-    __shared__ bool dirtyNeighbour;                     //Are we yet to account for changes in a neighbouring chunk?
-    volatile __shared__ bool dirtyBlock;                //Has this chunk been changed?
+        int lx = threadIdx.x; 	                            //Local x index
+        int ly = threadIdx.y;                               //Local y index
+        int ll = ly * CHUNK_SIZE + lx;                       //Local linearized index
+        int lx1 = lx;                                       //Second local x index
+        int ly1 = ly + (CHUNK_SIZE/2);                       //Second local y index
+        int ll1 = ly1 * CHUNK_SIZE + lx1;                    //Second local linearized index
+        
+        int gx = blockStartX + lx; 	                        //Global x index
+        int gy = blockStartY + ly;                          //Global y index
+        int gx1 = blockStartX + lx1; 	                    //Second Global x index
+        int gy1 = blockStartY + ly1;                        //Second Global y index
 
-    bool validGlobal = true;                            //Is the first set of coordinates globally valid?
-    bool validGlobal1 = true;                           //Is the second set of coordinates globally valid?
+        __shared__ int groupsChunk[CHUNK_SIZE * CHUNK_SIZE];  //Shared memory for groups of the local chunk
+        __shared__ bool blockStable;                        //Is the chunk in a stable configuration?
+        __shared__ bool dirtyNeighbour;                     //Are we yet to account for changes in a neighbouring chunk?
+        volatile __shared__ bool dirtyBlock;                //Has this chunk been changed?
 
-    int glg = gy * (gp / sizeof(int)) + gx;             //Global linearized index accounting for groups pitch
-    int glg1 = gy1 * (gp / sizeof(int)) + gx1;          //Second global linearized index accounting for groups pitch
+        bool validGlobal = true;                            //Is the first set of coordinates globally valid?
+        bool validGlobal1 = true;                           //Is the second set of coordinates globally valid?
 
-    //Chess pattern (vertical)
-    int lyc = ly * 2 + (lx % 2);                        //Local chess y
-    int gyc = blockStartY + lyc;                        //Global chess y
-    int lyc1 = ly * 2 + ((lx + 1) % 2);
-    int gyc1 = blockStartY + lyc1;
+        int glg = gy * (gp / sizeof(int)) + gx;             //Global linearized index accounting for groups pitch
+        int glg1 = gy1 * (gp / sizeof(int)) + gx1;          //Second global linearized index accounting for groups pitch
 
-    //Initialize flags
-    if (ll == 0) {
-        blockStable = true;
-        dirtyNeighbour = true;
-        dirtyBlock = false;
-    }
+        //Chess pattern (vertical)
+        int lyc = ly * 2 + (lx % 2);                        //Local chess y
+        int gyc = blockStartY + lyc;                        //Global chess y
+        int lyc1 = ly * 2 + ((lx + 1) % 2);
+        int gyc1 = blockStartY + lyc1;
 
-    //Bounds check
-    //if (gx >= width || gy >= height) return;
-    validGlobal = !(gx >= width || gy >= height);
-    validGlobal1 = !(gx1 >= width || gy1 >= height);
-
-    int big = width * height + 100;
-
-    //Init shared memory groups
-    groupsChunk[ll] = validGlobal ? groups[glg] : big;
-    groupsChunk[ll1] = validGlobal1 ? groups[glg1] : big;
-
-
-    __syncthreads(); //Await end of initialization
-
-    /////////////////////// End of initialization ///////////////////////
-    
-    do {
-
+        //Initialize flags
         if (ll == 0) {
             blockStable = true;
-            dirtyNeighbour = false;
-            //ToDo: only check this every so often?
-            serialCheckDirty(ll, &dirtyNeighbour, status_matrix, numBlocks, dirtyBlocks, sp / sizeof(ChunkStatus));
+            dirtyNeighbour = true;
+            dirtyBlock = false;
         }
-        __syncthreads();
 
-        propagate(lx, lyc, gx, gyc, width, height, mat, groupsChunk, &blockStable, groups, dirtyNeighbour, mp / sizeof(char), gp / sizeof(int));
-        __syncthreads(); //Taking this off doesn't affect the correctness of the solution but causes unecessary propagations to happen worsening performance a bit
-        propagate(lx, lyc1, gx, gyc1, width, height, mat, groupsChunk, &blockStable, groups, dirtyNeighbour, mp / sizeof(char), gp / sizeof(int));
+        //Bounds check
+        //if (gx >= width || gy >= height) return;
+        validGlobal = !(gx >= width || gy >= height);
+        validGlobal1 = !(gx1 >= width || gy1 >= height);
 
-        //__syncthreads(); //Sync all at the end of an iteration
-        if (!blockStable) dirtyBlock = true;
-        __syncthreads();
-    } while (!blockStable);
-    
-    if (dirtyBlock) {
-        //Race conditions shoulnd't be a concern here
-        if (validGlobal) groups[glg] = groupsChunk[ll];   //Copy stable chunk to global
-        if (validGlobal1) groups[glg1] = groupsChunk[ll1];
+        int big = width * height + 100;
 
-        if (ll == 0) {
-            // Calculate valid neighbors. If a neighbour in one direction doesn't exist the dirty flag shoulnd't be raised because nothing
-            // would be able to then lower it again
-            int flags = WAITING;
-            if (blockIdx.y > 0)             flags |= DIRTY_NORTH;
-            if (blockIdx.x < numBlocks.x-1) flags |= DIRTY_EAST;
-            if (blockIdx.y < numBlocks.y-1) flags |= DIRTY_SOUTH;
-            if (blockIdx.x > 0)             flags |= DIRTY_WEST;
-            //Atomically check if chunk was already dirty and make it dirty
-            ChunkStatus old_status = (ChunkStatus)atomicOr( (int*)&status_matrix[blockIdx.y * (sp / sizeof(ChunkStatus)) + blockIdx.x], flags);
-            if (old_status == 0) atomicAdd(dirtyBlocks, 1); // Only increment if previously clean
+        //Init shared memory groups
+        groupsChunk[ll] = validGlobal ? groups[glg] : big;
+        groupsChunk[ll1] = validGlobal1 ? groups[glg1] : big;
+
+
+        __syncthreads(); //Await end of initialization
+
+        /////////////////////// End of initialization ///////////////////////
+        
+        do {
+
+            if (ll == 0) {
+                blockStable = true;
+                dirtyNeighbour = false;
+                //ToDo: only check this every so often?
+                serialCheckDirty(ll, &dirtyNeighbour, status_matrix, numBlocks, dirtyBlocks, sp / sizeof(ChunkStatus));
+            }
+            __syncthreads();
+
+            propagate(lx, lyc, gx, gyc, width, height, mat, groupsChunk, &blockStable, groups, dirtyNeighbour, mp / sizeof(char), gp / sizeof(int));
+            __syncthreads(); //Taking this off doesn't affect the correctness of the solution but causes unecessary propagations to happen worsening performance a bit
+            propagate(lx, lyc1, gx, gyc1, width, height, mat, groupsChunk, &blockStable, groups, dirtyNeighbour, mp / sizeof(char), gp / sizeof(int));
+
+            //__syncthreads(); //Sync all at the end of an iteration
+            if (!blockStable) dirtyBlock = true;
+            __syncthreads();
+        } while (!blockStable);
+        
+        if (dirtyBlock) {
+            //Race conditions shoulnd't be a concern here
+            if (validGlobal) groups[glg] = groupsChunk[ll];   //Copy stable chunk to global
+            if (validGlobal1) groups[glg1] = groupsChunk[ll1];
+
+            if (ll == 0) {
+                // Calculate valid neighbors. If a neighbour in one direction doesn't exist the dirty flag shoulnd't be raised because nothing
+                // would be able to then lower it again
+                int flags = WAITING;
+                if (blockIdx.y > 0)             flags |= DIRTY_NORTH;
+                if (blockIdx.x < numBlocks.x-1) flags |= DIRTY_EAST;
+                if (blockIdx.y < numBlocks.y-1) flags |= DIRTY_SOUTH;
+                if (blockIdx.x > 0)             flags |= DIRTY_WEST;
+                //Atomically check if chunk was already dirty and make it dirty
+                ChunkStatus old_status = (ChunkStatus)atomicOr( (int*)&status_matrix[blockIdx.y * (sp / sizeof(ChunkStatus)) + blockIdx.x], flags);
+                if (old_status == 0) atomicAdd(dirtyBlocks, 1); // Only increment if previously clean
+            }
         }
+
     }
     
 }
 
 GroupMatrix cuda_cc(const CharMatrix* __restrict__ mat) {
 
-    dim3 numBlocks( (mat->width + ChunkSize - 1) / ChunkSize, (mat->height + ChunkSize - 1) / ChunkSize );
-    dim3 numThreads(ChunkSize, ChunkSize/2);
+    int numSM;
+    cudaDeviceGetAttribute(&numSM, cudaDevAttrMultiProcessorCount, 0); //First device
+
+    dim3 numChunks( (mat->width + CHUNK_SIZE - 1) / CHUNK_SIZE, (mat->height + CHUNK_SIZE - 1) / CHUNK_SIZE );
+    dim3 numBlocks(numSM * BLOCK_MULT, numSM * BLOCK_MULT);
+    dim3 numThreads(CHUNK_SIZE, CHUNK_SIZE/2);
 
     //Initialize and allocate device memory for groups
     int* d_groups;
@@ -218,33 +230,33 @@ GroupMatrix cuda_cc(const CharMatrix* __restrict__ mat) {
     HANDLE_ERROR(cudaMemcpy2D(d_mat, mat_pitch, mat->matrix, mat->width * sizeof(char), mat->width * sizeof(char), mat->height, cudaMemcpyHostToDevice));
 
     //Initialize status matrix
-    int statusSize = sizeof(ChunkStatus) * numBlocks.x * numBlocks.y;
+    int statusSize = sizeof(ChunkStatus) * numChunks.x * numChunks.y;
     enum ChunkStatus* h_status_matrix;
     h_status_matrix = (ChunkStatus*)malloc(statusSize);
     // Initialize status matrix with by forcing a first inter-block communication before anything else happens
-    for (int x = 0; x < numBlocks.x; x++) {
-        for (int y = 0; y < numBlocks.y; y++) {
+    for (int x = 0; x < numChunks.x; x++) {
+        for (int y = 0; y < numChunks.y; y++) {
             int status = WAITING;
-            if (y < numBlocks.y - 1) status |= DIRTY_SOUTH;
-            if (x < numBlocks.x - 1) status |= DIRTY_EAST;
+            if (y < numChunks.y - 1) status |= DIRTY_SOUTH;
+            if (x < numChunks.x - 1) status |= DIRTY_EAST;
             if (y > 0)               status |= DIRTY_NORTH;
             if (x > 0)               status |= DIRTY_WEST;
-            h_status_matrix[y * numBlocks.x + x] = (ChunkStatus)status;
+            h_status_matrix[y * numChunks.x + x] = (ChunkStatus)status;
         }
     }
     enum ChunkStatus* d_status_matrix;
     //HANDLE_ERROR(cudaMalloc((void**)&d_status_matrix, statusSize));
     //HANDLE_ERROR(cudaMemcpy(d_status_matrix, h_status_matrix, statusSize, cudaMemcpyHostToDevice));
     size_t status_pitch;
-    HANDLE_ERROR(cudaMallocPitch(&d_status_matrix, &status_pitch, numBlocks.x * sizeof(ChunkStatus), numBlocks.y));
-    HANDLE_ERROR(cudaMemcpy2D(d_status_matrix, status_pitch, h_status_matrix, numBlocks.x * sizeof(ChunkStatus), numBlocks.x * sizeof(ChunkStatus), numBlocks.y, cudaMemcpyHostToDevice));
+    HANDLE_ERROR(cudaMallocPitch(&d_status_matrix, &status_pitch, numChunks.x * sizeof(ChunkStatus), numChunks.y));
+    HANDLE_ERROR(cudaMemcpy2D(d_status_matrix, status_pitch, h_status_matrix, numChunks.x * sizeof(ChunkStatus), numChunks.x * sizeof(ChunkStatus), numChunks.y, cudaMemcpyHostToDevice));
 
     //Dirty count
     int* d_dirty;
     int* h_dirty;
     cudaHostAlloc(&h_dirty, sizeof(int), 0);
     //cudaHostGetDevicePointer(&d_dirty, h_dirty, 0); Using mapped memory worsens performance considerably
-    *h_dirty = numBlocks.x * numBlocks.y;
+    *h_dirty = numChunks.x * numChunks.y;
     HANDLE_ERROR(cudaMalloc((void**)&d_dirty, sizeof(int)));
     HANDLE_ERROR(cudaMemcpy(d_dirty, h_dirty, sizeof(int), cudaMemcpyHostToDevice));
 
@@ -256,7 +268,7 @@ GroupMatrix cuda_cc(const CharMatrix* __restrict__ mat) {
 
         //printf("Dirty blocks: %d\n", *h_dirty);
         
-        cuda_cc<<<numBlocks, numThreads>>>(d_groups, d_mat, mat->width, mat->height, d_status_matrix, numBlocks, d_dirty, groups_pitch, mat_pitch, status_pitch);
+        cuda_cc<<<numChunks, numThreads>>>(d_groups, d_mat, mat->width, mat->height, d_status_matrix, numChunks, d_dirty, groups_pitch, mat_pitch, status_pitch, numChunks.x * numChunks.y);
 
         HANDLE_ERROR(cudaMemcpy(h_dirty, d_dirty, sizeof(int), cudaMemcpyDeviceToHost));
         cudaDeviceSynchronize();
@@ -264,7 +276,7 @@ GroupMatrix cuda_cc(const CharMatrix* __restrict__ mat) {
         checkCUDAError("call of cuda_cc kernel");
 
         iters++;
-        if (iters > numBlocks.x * numBlocks.y * 100) { //Cap of 100 kernel iterations per block
+        if (iters > numChunks.x * numChunks.y * 100) { //Cap of 100 kernel iterations per block
             printf("Something went wrong! Quitting and logging solution\n");
             err = true;
         }
@@ -278,10 +290,10 @@ GroupMatrix cuda_cc(const CharMatrix* __restrict__ mat) {
     if (err) {
         //Dump groups and dirty matrix to a file
         GroupMatrix dirtyMatrix;
-        dirtyMatrix.width = numBlocks.x; dirtyMatrix.height = numBlocks.y;
-        dirtyMatrix.groups = (int*)malloc(numBlocks.x * numBlocks.y * sizeof(int));
+        dirtyMatrix.width = numChunks.x; dirtyMatrix.height = numChunks.y;
+        dirtyMatrix.groups = (int*)malloc(numChunks.x * numChunks.y * sizeof(int));
         //HANDLE_ERROR(cudaMemcpy(dirtyMatrix.groups, (void*)d_status_matrix, dirtyMatrix.width * dirtyMatrix.height * sizeof(int), cudaMemcpyDeviceToHost));
-        HANDLE_ERROR(cudaMemcpy2D(dirtyMatrix.groups, numBlocks.x * sizeof(int), &d_status_matrix, status_pitch, numBlocks.x * sizeof(int), numBlocks.y, cudaMemcpyDeviceToHost));
+        HANDLE_ERROR(cudaMemcpy2D(dirtyMatrix.groups, numChunks.x * sizeof(int), &d_status_matrix, status_pitch, numChunks.x * sizeof(int), numChunks.y, cudaMemcpyDeviceToHost));
         cudaDeviceSynchronize(); //ToDo: check if needed
         saveGroupMatrixToFile(&h_groups, "Outputs/Errors/err_groups.txt");
         saveGroupMatrixToFile(&dirtyMatrix, "Outputs/Errors/err_statuses.txt");
