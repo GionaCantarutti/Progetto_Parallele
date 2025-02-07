@@ -105,8 +105,8 @@ __global__ void cc_kernel(int* groups, const char* __restrict__ mat, int width, 
         //Each thread will handle two cells each (hence the doubled indexes). In the memory management part we split the 32x32 chunk into two 16x32 sections.
         //In the iterative algorithm part instead we split the 32x32 chunk into a chessboard pattern of alternating cells so that we can avoid race dontions.
 
-        int blockStartX = (lbi % gridDim.x) * CHUNK_SIZE;    // Each block covers 32 columns
-        int blockStartY = (lbi / gridDim.x) * CHUNK_SIZE;    // and 32 rows
+        int blockStartX = (lbi % gridDim.x) * CHUNK_SIZE;    // Each block covers CHUNK_SIZE columns
+        int blockStartY = (lbi / gridDim.x) * CHUNK_SIZE;    // and CHUNK_SIZE rows
 
         //Grid-stride loop for threads. lti = linearized thread index
         for (int lti = threadIdx.y * blockDim.x + threadIdx.x; lti < CHUNK_SIZE * (CHUNK_SIZE/2); lti += blockDim.y * blockDim.x) {
@@ -224,7 +224,7 @@ GroupMatrix cuda_cc(const CharMatrix* __restrict__ mat) {
     //printf("\nblock size = %d, grid size = %d, block sqrt = %d, grid sqrt = %d\n", blockSize, gridSize, blockSizeSqrt, gridSizeSqrt);
 
     dim3 numBlocks(gridSizeSqrt, gridSizeSqrt);
-    dim3 numThreads(blockSizeSqrt, blockSizeSqrt/2);
+    dim3 numThreads(blockSizeSqrt, blockSizeSqrt / 2);
 
 
     //Initialize and allocate device memory for groups
