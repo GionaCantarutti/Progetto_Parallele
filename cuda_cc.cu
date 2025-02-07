@@ -173,6 +173,8 @@ __global__ void cuda_cc(int* groups, const char* __restrict__ mat, int width, in
         __syncthreads();
     } while (!blockStable);
     
+    __threadfence();
+
     if (dirtyBlock) {
         //Race conditions shoulnd't be a concern here
         if (validGlobal) groups[glg] = groupsChunk[ll];   //Copy stable chunk to global
