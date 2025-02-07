@@ -72,13 +72,13 @@ __device__ void propagate(  int lxc, int lyc, int gxc, int gyc, int width, int h
 }
 
 //Check if there's a dirty neighbouring chunk. If so lower the corresponding directional dirty flag on that chunk
-__device__ void serialCheckDirty(int ll, bool* __restrict__ dirtyNeighbour, ChunkStatus* __restrict__ status_matrix, dim3 numBlocks, int* __restrict__ dirtyBlocks, int sp) {
+__device__ void serialCheckDirty(int ll, bool* __restrict__ dirtyNeighbour, ChunkStatus* __restrict__ status_matrix, dim3 numBlocks, int* __restrict__ dirtyBlocks, int sp, int chunkX, int chunkY) {
     __threadfence(); //Prevent rare inconsistencies when undirtying a chunk as its still being written to
     //ToDo: spread over 4 threads
     #pragma unroll
     for (int i = 0; i < 4; i++) {
-        int nx = blockIdx.x + dx[i];    //New x value
-        int ny = blockIdx.y + dy[i];    //New y value
+        int nx = chunkX + dx[i];    //New x value
+        int ny = chunkY + dy[i];    //New y value
         if (ny >= numBlocks.y || ny < 0 || nx >= numBlocks.x || nx < 0) continue; //Boundary check
         int index = ny * sp + nx;
 
@@ -97,16 +97,19 @@ __device__ void serialCheckDirty(int ll, bool* __restrict__ dirtyNeighbour, Chun
 }
 
 //ToDo: probs there's a way to get block count without passing it as argument
-__global__ void cuda_cc(int* groups, const char* __restrict__ mat, int width, int height, ChunkStatus* __restrict__ status_matrix, dim3 numBlocks, int* __restrict__ dirtyBlocks, size_t gp, size_t mp, size_t sp, int nChunks) {
+__global__ void cuda_cc(int* groups, const char* __restrict__ mat, int width, int height, ChunkStatus* __restrict__ status_matrix, dim3 numBlocks, int* __restrict__ dirtyBlocks, size_t gp, size_t mp, size_t sp, dim3 nChunks) {
 
     //Gride-stride loop. lbi = linearized block index
-    for (int lbi = blockIdx.y * gridDim.x + blockIdx.x; lbi < nChunks; lbi += gridDim.y * gridDim.x) {
+    for (int lbi = blockIdx.y * gridDim.x + blockIdx.x; lbi < nChunks.x * nChunks.y; lbi += gridDim.y * gridDim.x) {
 
         //Each thread will handle two cells each (hence the doubled indexes). In the memory management part we split the 32x32 chunk into two 16x32 sections.
         //In the iterative algorithm part instead we split the 32x32 chunk into a chessboard pattern of alternating cells so that we can avoid race dontions.
 
-        int blockStartX = (lbi % gridDim.x) * CHUNK_SIZE;    // Each block covers 32 columns
-        int blockStartY = (lbi / gridDim.x) * CHUNK_SIZE;    // and 32 rows
+        int chunkX = lbi % nChunks.x;
+        int chunkY = lbi / nChunks.x;
+
+        int blockStartX = chunkX * CHUNK_SIZE;    // Each block covers 32 columns
+        int blockStartY = chunkY * CHUNK_SIZE;    // and 32 rows
 
         int lx = threadIdx.x; 	                            //Local x index
         int ly = threadIdx.y;                               //Local y index
@@ -166,7 +169,7 @@ __global__ void cuda_cc(int* groups, const char* __restrict__ mat, int width, in
                 blockStable = true;
                 dirtyNeighbour = false;
                 //ToDo: only check this every so often?
-                serialCheckDirty(ll, &dirtyNeighbour, status_matrix, numBlocks, dirtyBlocks, sp / sizeof(ChunkStatus));
+                serialCheckDirty(ll, &dirtyNeighbour, status_matrix, numBlocks, dirtyBlocks, sp / sizeof(ChunkStatus), chunkX, chunkY);
             }
             __syncthreads();
 
@@ -188,12 +191,12 @@ __global__ void cuda_cc(int* groups, const char* __restrict__ mat, int width, in
                 // Calculate valid neighbors. If a neighbour in one direction doesn't exist the dirty flag shoulnd't be raised because nothing
                 // would be able to then lower it again
                 int flags = WAITING;
-                if (blockIdx.y > 0)             flags |= DIRTY_NORTH;
-                if (blockIdx.x < numBlocks.x-1) flags |= DIRTY_EAST;
-                if (blockIdx.y < numBlocks.y-1) flags |= DIRTY_SOUTH;
-                if (blockIdx.x > 0)             flags |= DIRTY_WEST;
+                if (chunkY > 0)             flags |= DIRTY_NORTH;
+                if (chunkX < numBlocks.x-1) flags |= DIRTY_EAST;
+                if (chunkY < numBlocks.y-1) flags |= DIRTY_SOUTH;
+                if (chunkX > 0)             flags |= DIRTY_WEST;
                 //Atomically check if chunk was already dirty and make it dirty
-                ChunkStatus old_status = (ChunkStatus)atomicOr( (int*)&status_matrix[blockIdx.y * (sp / sizeof(ChunkStatus)) + blockIdx.x], flags);
+                ChunkStatus old_status = (ChunkStatus)atomicOr( (int*)&status_matrix[chunkY * (sp / sizeof(ChunkStatus)) + chunkX], flags);
                 if (old_status == 0) atomicAdd(dirtyBlocks, 1); // Only increment if previously clean
             }
         }
@@ -268,7 +271,7 @@ GroupMatrix cuda_cc(const CharMatrix* __restrict__ mat) {
 
         //printf("Dirty blocks: %d\n", *h_dirty);
         
-        cuda_cc<<<numChunks, numThreads>>>(d_groups, d_mat, mat->width, mat->height, d_status_matrix, numChunks, d_dirty, groups_pitch, mat_pitch, status_pitch, numChunks.x * numChunks.y);
+        cuda_cc<<<numBlocks, numThreads>>>(d_groups, d_mat, mat->width, mat->height, d_status_matrix, numChunks, d_dirty, groups_pitch, mat_pitch, status_pitch, numChunks);
 
         HANDLE_ERROR(cudaMemcpy(h_dirty, d_dirty, sizeof(int), cudaMemcpyDeviceToHost));
         cudaDeviceSynchronize();
