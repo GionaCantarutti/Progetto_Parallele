@@ -94,7 +94,7 @@ __device__ void serialCheckDirty(int ll, bool* __restrict__ dirtyNeighbour, Chun
 }
 
 //ToDo: probs there's a way to get block count without passing it as argument
-__global__ void cuda_cc(int* groups, const char* __restrict__ mat, int width, int height, ChunkStatus* __restrict__ status_matrix, dim3 numBlocks, int* __restrict__ dirtyBlocks, size_t gp, size_t mp, size_t sp) {
+__global__ void cc_kernel(int* groups, const char* __restrict__ mat, int width, int height, ChunkStatus* __restrict__ status_matrix, dim3 numBlocks, int* __restrict__ dirtyBlocks, size_t gp, size_t mp, size_t sp) {
 
     //Each thread will handle two cells each (hence the doubled indexes). In the memory management part we split the 32x32 chunk into two 16x32 sections.
     //In the iterative algorithm part instead we split the 32x32 chunk into a chessboard pattern of alternating cells so that we can avoid race dontions.
@@ -257,8 +257,13 @@ GroupMatrix cuda_cc(const CharMatrix* __restrict__ mat) {
     while (*h_dirty > 0 && !err) {
 
         //printf("Dirty blocks: %d\n", *h_dirty);
+        // void* args[] = {d_groups, d_mat, (void*)&mat->width, (void*)&mat->height, d_status_matrix, &numBlocks, d_dirty, &groups_pitch, &mat_pitch, &status_pitch};
+        // void** args_dyn = (void**)malloc(sizeof(args));
+        // memcpy(args_dyn, args, sizeof(args));
         
-        cuda_cc<<<numBlocks, numThreads>>>(d_groups, d_mat, mat->width, mat->height, d_status_matrix, numBlocks, d_dirty, groups_pitch, mat_pitch, status_pitch);
+        cc_kernel<<<numBlocks, numThreads>>>(d_groups, d_mat, mat->width, mat->height, d_status_matrix, numBlocks, d_dirty, groups_pitch, mat_pitch, status_pitch);
+        //cudaLaunchCooperativeKernel((void*)cc_kernel, numBlocks, numThreads, args_dyn);
+
 
         HANDLE_ERROR(cudaMemcpy(h_dirty, d_dirty, sizeof(int), cudaMemcpyDeviceToHost));
         cudaDeviceSynchronize();
