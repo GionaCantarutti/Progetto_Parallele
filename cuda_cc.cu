@@ -106,31 +106,13 @@ __global__ void cc_kernel(int* groups, const char* __restrict__ mat, int width, 
     int lx = threadIdx.x; 	                            //Local x index
     int ly = threadIdx.y;                               //Local y index
     int ll = ly * ChunkSize + lx;                       //Local linearized index
-    int lx1 = threadIdx.x + (ChunkSize/2);              //Second local x index
-    int ly1 = ly;                                       //Second local y index
-    int ll1 = ly1 * ChunkSize + lx1;                    //Second local linearized index
     
-    int gx = blockStartX + lx; 	                        //Global x index
     int gy = blockStartY + ly;                          //Global y index
-    int gx1 = blockStartX + lx1; 	                    //Second Global x index
-    int gy1 = blockStartY + ly1;                        //Second Global y index
 
     __shared__ int groupsChunk[ChunkSize * ChunkSize];  //Shared memory for groups of the local chunk
     __shared__ bool blockStable;                        //Is the chunk in a stable configuration?
     __shared__ bool dirtyNeighbour;                     //Are we yet to account for changes in a neighbouring chunk?
     volatile __shared__ bool dirtyBlock;                //Has this chunk been changed?
-
-    bool validGlobal = true;                            //Is the first set of coordinates globally valid?
-    bool validGlobal1 = true;                           //Is the second set of coordinates globally valid?
-
-    int glg = gy * (gp / sizeof(int)) + gx;                    //Global linearized index accounting for groups pitch
-    int glg1 = gy1 * (gp / sizeof(int)) + gx1;                 //Second global linearized index accounting for groups pitch
-
-    //Chess pattern (vertical)
-    // int lyc = ly * 2 + (lx & 1);                        //Local chess y
-    // int gyc = blockStartY + lyc;                        //Global chess y
-    // int lyc1 = ly * 2 + ((lx + 1) & 1);
-    // int gyc1 = blockStartY + lyc1;
 
     //Chess pattern
     int lxc = lx * 2 + (ly % 2);    //Local chess x
@@ -145,26 +127,20 @@ __global__ void cc_kernel(int* groups, const char* __restrict__ mat, int width, 
         dirtyBlock = false;
     }
 
-    //Bounds check
-    //if (gx >= width || gy >= height) return;
-    validGlobal = !(gx >= width || gy >= height);
-    validGlobal1 = !(gx1 >= width || gy1 >= height);
-
     //Vectorized access pattern
-    int vlx = lx * 2;
-    int vly = ly;
-    int vll = vly * ChunkSize + vlx;
-    int vll2 = vll / 2;
+    int vlx = (lx << 1);                        //1-int x position in local space
+    int vll = ly * ChunkSize + vlx;             //1-int linearized position in local space
     int vgx = vlx + blockStartX;                //1-int x position in global space
     int vgy = ly + blockStartY;                 //1-int y position in global space
     int vgl = vgy * (gp / sizeof(int)) + vgx;   //1-int linearized position in global space
-    int vgl2 = vgl / 2;                         //2-int linearized position in global space
 
     //Init shared memory groups
-    if (vgx + 1 < width && vgy < height) {
-        reinterpret_cast<int2*>(groupsChunk)[vll2] = reinterpret_cast<int2*>(groups)[vgl2];
-    } else if (vgx < width && vgy < height) {
-        groupsChunk[vll + 1] = groups[vgl + 1];
+    if (vgy < height && vgx < width) {
+        if (vgx + 1 < width) {
+            reinterpret_cast<int2*>(groupsChunk)[vll >> 1] = reinterpret_cast<int2*>(groups)[vgl >> 1];
+        } else {
+            groupsChunk[vll + 1] = groups[vgl + 1];
+        }
     }
     // if (validGlobal) groupsChunk[ll] = groups[glg];
     // if (validGlobal1) groupsChunk[ll1] = groups[glg1];
@@ -199,13 +175,12 @@ __global__ void cc_kernel(int* groups, const char* __restrict__ mat, int width, 
 
     if (dirtyBlock) {
         //Race conditions shoulnd't be a concern here
-        // if (validGlobal) groups[glg] = groupsChunk[ll];   //Copy stable chunk to global
-        // if (validGlobal1) groups[glg1] = groupsChunk[ll1];
-
-        if (vgx + 1 < width && vgy < height) {
-            reinterpret_cast<int2*>(groups)[vgl2] = reinterpret_cast<int2*>(groupsChunk)[vll2];
-        } else if (vgx < width && vgy < height) {
-            groups[vgl + 1] = groupsChunk[vll + 1];
+        if (vgy < height && vgx < width) {
+            if (vgx + 1 < width) {
+                reinterpret_cast<int2*>(groups)[vgl >> 1] = reinterpret_cast<int2*>(groupsChunk)[vll >> 1];
+            } else {
+                groups[vgl + 1] = groupsChunk[vll + 1];
+            }
         }
 
         if (ll == 0) {
