@@ -106,8 +106,8 @@ __global__ void cc_kernel(int* groups, const char* __restrict__ mat, int width, 
     int lx = threadIdx.x; 	                            //Local x index
     int ly = threadIdx.y;                               //Local y index
     int ll = ly * ChunkSize + lx;                       //Local linearized index
-    int lx1 = lx;                                       //Second local x index
-    int ly1 = ly + (ChunkSize/2);                       //Second local y index
+    int lx1 = threadIdx.x + (ChunkSize/2);              //Second local x index
+    int ly1 = ly;                                       //Second local y index
     int ll1 = ly1 * ChunkSize + lx1;                    //Second local linearized index
     
     int gx = blockStartX + lx; 	                        //Global x index
@@ -123,14 +123,20 @@ __global__ void cc_kernel(int* groups, const char* __restrict__ mat, int width, 
     bool validGlobal = true;                            //Is the first set of coordinates globally valid?
     bool validGlobal1 = true;                           //Is the second set of coordinates globally valid?
 
-    int glg = gy * (gp / sizeof(int)) + gx;             //Global linearized index accounting for groups pitch
-    int glg1 = gy1 * (gp / sizeof(int)) + gx1;          //Second global linearized index accounting for groups pitch
+    int glg = gy * (gp / sizeof(int)) + gx;                    //Global linearized index accounting for groups pitch
+    int glg1 = gy1 * (gp / sizeof(int)) + gx1;                 //Second global linearized index accounting for groups pitch
 
     //Chess pattern (vertical)
-    int lyc = ly * 2 + (lx & 1);                        //Local chess y
-    int gyc = blockStartY + lyc;                        //Global chess y
-    int lyc1 = ly * 2 + ((lx + 1) & 1);
-    int gyc1 = blockStartY + lyc1;
+    // int lyc = ly * 2 + (lx & 1);                        //Local chess y
+    // int gyc = blockStartY + lyc;                        //Global chess y
+    // int lyc1 = ly * 2 + ((lx + 1) & 1);
+    // int gyc1 = blockStartY + lyc1;
+
+    //Chess pattern
+    int lxc = lx * 2 + (ly % 2);    //Local chess x
+    int gxc = blockStartX + lxc;    //Global chess x
+    int lxc1 = lx * 2 + ((ly + 1) % 2);
+    int gxc1 = blockStartX + lxc1;
 
     //Initialize flags
     if (ll == 0) {
@@ -144,11 +150,24 @@ __global__ void cc_kernel(int* groups, const char* __restrict__ mat, int width, 
     validGlobal = !(gx >= width || gy >= height);
     validGlobal1 = !(gx1 >= width || gy1 >= height);
 
-    int big = width * height + 100;
+    //Vectorized access pattern
+    int vlx = lx * 2;
+    int vly = ly;
+    int vll = vly * ChunkSize + vlx;
+    int vll2 = vll / 2;
+    int vgx = vlx + blockStartX;                //1-int x position in global space
+    int vgy = ly + blockStartY;                 //1-int y position in global space
+    int vgl = vgy * (gp / sizeof(int)) + vgx;   //1-int linearized position in global space
+    int vgl2 = vgl / 2;                         //2-int linearized position in global space
 
     //Init shared memory groups
-    groupsChunk[ll] = validGlobal ? groups[glg] : big;
-    groupsChunk[ll1] = validGlobal1 ? groups[glg1] : big;
+    if (vgx + 1 < width && vgy < height) {
+        reinterpret_cast<int2*>(groupsChunk)[vll2] = reinterpret_cast<int2*>(groups)[vgl2];
+    } else if (vgx < width && vgy < height) {
+        groupsChunk[vll + 1] = groups[vgl + 1];
+    }
+    // if (validGlobal) groupsChunk[ll] = groups[glg];
+    // if (validGlobal1) groupsChunk[ll1] = groups[glg1];
 
 
     __syncthreads(); //Await end of initialization
@@ -165,9 +184,11 @@ __global__ void cc_kernel(int* groups, const char* __restrict__ mat, int width, 
         }
         __syncthreads();
 
-        propagate(lx, lyc, gx, gyc, width, height, mat, groupsChunk, &blockStable, groups, dirtyNeighbour, mp / sizeof(char), gp / sizeof(int));
+        
+
+        propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable, groups, dirtyNeighbour, mp / sizeof(char), gp / sizeof(int));
         __syncthreads(); //Taking this off doesn't affect the correctness of the solution but causes unecessary propagations to happen worsening performance a bit
-        propagate(lx, lyc1, gx, gyc1, width, height, mat, groupsChunk, &blockStable, groups, dirtyNeighbour, mp / sizeof(char), gp / sizeof(int));
+        propagate(lxc1, ly, gxc1, gy, width, height, mat, groupsChunk, &blockStable, groups, dirtyNeighbour, mp / sizeof(char), gp / sizeof(int));
 
         //__syncthreads(); //Sync all at the end of an iteration
         if (!blockStable) dirtyBlock = true;
@@ -178,8 +199,14 @@ __global__ void cc_kernel(int* groups, const char* __restrict__ mat, int width, 
 
     if (dirtyBlock) {
         //Race conditions shoulnd't be a concern here
-        if (validGlobal) groups[glg] = groupsChunk[ll];   //Copy stable chunk to global
-        if (validGlobal1) groups[glg1] = groupsChunk[ll1];
+        // if (validGlobal) groups[glg] = groupsChunk[ll];   //Copy stable chunk to global
+        // if (validGlobal1) groups[glg1] = groupsChunk[ll1];
+
+        if (vgx + 1 < width && vgy < height) {
+            reinterpret_cast<int2*>(groups)[vgl2] = reinterpret_cast<int2*>(groupsChunk)[vll2];
+        } else if (vgx < width && vgy < height) {
+            groups[vgl + 1] = groupsChunk[vll + 1];
+        }
 
         if (ll == 0) {
             // Calculate valid neighbors. If a neighbour in one direction doesn't exist the dirty flag shoulnd't be raised because nothing
@@ -200,7 +227,7 @@ __global__ void cc_kernel(int* groups, const char* __restrict__ mat, int width, 
 GroupMatrix cuda_cc(const CharMatrix* __restrict__ mat) {
 
     dim3 numBlocks( (mat->width + ChunkSize - 1) / ChunkSize, (mat->height + ChunkSize - 1) / ChunkSize );
-    dim3 numThreads(ChunkSize, ChunkSize/2);
+    dim3 numThreads(ChunkSize/2, ChunkSize);
 
     //Initialize and allocate device memory for groups
     int* d_groups;
