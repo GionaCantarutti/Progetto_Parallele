@@ -1,6 +1,9 @@
 #include "char_matrix.h"
+#include <cooperative_groups.h>
 
 #define ChunkSize 32    //Has to be divisible by 2
+
+using namespace cooperative_groups;
 
 static void HandleError( cudaError_t err, const char *file, int line ) {
     if (err != cudaSuccess) {
@@ -213,7 +216,7 @@ GroupMatrix cuda_cc(const CharMatrix* __restrict__ mat) {
     cudaEventCreate(&kernel_time_start); cudaEventCreate(&kernel_time_stop);
 
     dim3 numChunks( (mat->width + ChunkSize - 1) / ChunkSize, (mat->height + ChunkSize - 1) / ChunkSize );
-    dim3 numBlocks( numChunks.x, numChunks.y);
+    dim3 numBlocks( numChunks.x, numChunks.y );
     dim3 numThreads(ChunkSize/2, ChunkSize);
 
     //Initialize and allocate device memory for groups
@@ -274,14 +277,16 @@ GroupMatrix cuda_cc(const CharMatrix* __restrict__ mat) {
     cudaEventRecord(kernel_loop_start);
     while (*h_dirty > 0 && !err) {
 
-        //printf("Dirty blocks: %d\n", *h_dirty);
-        // void* args[] = {d_groups, d_mat, (void*)&mat->width, (void*)&mat->height, d_status_matrix, &numChunks, d_dirty, &groups_pitch, &mat_pitch, &status_pitch};
+        // printf("Dirty blocks: %d\n", *h_dirty);
+        
+        // int groups_pitch_e = groups_pitch / sizeof(int); int mat_pitch_e = mat_pitch / sizeof(char); int status_pitch_e = status_pitch / sizeof(ChunkStatus);
+        // void* args[] = {&d_groups, &d_mat, (void*)&mat->width, (void*)&mat->height, &d_status_matrix, &numChunks, &d_dirty, &groups_pitch_e, &mat_pitch_e, &status_pitch_e};
         // void** args_dyn = (void**)malloc(sizeof(args));
         // memcpy(args_dyn, args, sizeof(args));
         
         cudaEventRecord(kernel_time_start);
         cc_kernel<<<numBlocks, numThreads>>>(d_groups, d_mat, mat->width, mat->height, d_status_matrix, numChunks, d_dirty, groups_pitch / sizeof(int), mat_pitch / sizeof(char), status_pitch / sizeof(ChunkStatus));
-        //cudaLaunchCooperativeKernel((void*)cc_kernel, numBlocks, numThreads, args_dyn);
+        // cudaLaunchCooperativeKernel((void*)cc_kernel, numBlocks, numThreads, args_dyn);
         cudaEventRecord(kernel_time_stop);
 
 
