@@ -33,7 +33,7 @@ __constant__ const int dy[] = {0, 0, 1, -1};
 //Map delta index to cardinal direction in reverse
 __constant__ const int bdr[] = {1 << 3, 1 << 1, 1 << 0, 1 << 2};
 
-__device__ int propagate_min(char centerChar, char neighChar, int centerGID, int neighGID) {
+__forceinline__ __device__ int propagate_min(char centerChar, char neighChar, int centerGID, int neighGID) {
 
     int mask = -(int)(centerChar == neighChar); //Mask cases where chars are different
     int diff = centerGID - neighGID;
@@ -44,7 +44,7 @@ __device__ int propagate_min(char centerChar, char neighChar, int centerGID, int
 
 }
 
-__device__ void propagate(  int lxc, int lyc, int gxc, int gyc, int width, int height, const char* __restrict__ mat, int groupsChunk[ChunkSize * ChunkSize],
+__forceinline__ __device__ void propagate(  int lxc, int lyc, int gxc, int gyc, int width, int height, const char* __restrict__ mat, int groupsChunk[ChunkSize * ChunkSize],
                             bool* __restrict__ blockStable, const int* __restrict__ groups, bool dirtyNeighbour, int mp, int gp) {
 
     if (gxc >= width || gyc >= height) return; //Bounds check
@@ -60,7 +60,7 @@ __device__ void propagate(  int lxc, int lyc, int gxc, int gyc, int width, int h
 
         int neighGID = dirtyNeighbour ? groups[ngyc * gp + ngxc] : groupsChunk[nlyc * ChunkSize + nlxc];
 
-        int newGID = propagate_min(mat[gyc * mp + gxc], mat[ngyc * mp + ngxc], groupsChunk[lyc * ChunkSize + lxc], neighGID);
+        int newGID = propagate_min(__ldg(&mat[gyc * mp + gxc]), __ldg(&mat[ngyc * mp + ngxc]), groupsChunk[lyc * ChunkSize + lxc], neighGID);
         if (newGID < groupsChunk[lyc * ChunkSize + lxc]) {
             groupsChunk[lyc * ChunkSize + lxc] = newGID;
             *blockStable = false;
@@ -71,7 +71,7 @@ __device__ void propagate(  int lxc, int lyc, int gxc, int gyc, int width, int h
 }
 
 //Check if there's a dirty neighbouring chunk. If so lower the corresponding directional dirty flag on that chunk
-__device__ void serialCheckDirty(int ll, bool* __restrict__ dirtyNeighbour, ChunkStatus* __restrict__ status_matrix, dim3 numBlocks, int* __restrict__ dirtyBlocks, int sp) {
+__forceinline__  __device__ void serialCheckDirty(int ll, bool* __restrict__ dirtyNeighbour, ChunkStatus* __restrict__ status_matrix, dim3 numBlocks, int* __restrict__ dirtyBlocks, int sp) {
     __threadfence(); //Prevent rare inconsistencies when undirtying a chunk as its still being written to
     #pragma unroll
     for (int i = 0; i < 4; i++) {
@@ -131,11 +131,10 @@ __global__ void cc_kernel(int* groups, const char* __restrict__ mat, int width, 
     int vlx = (lx << 1);                        //1-int x position in local space
     int vll = ly * ChunkSize + vlx;             //1-int linearized position in local space
     int vgx = vlx + blockStartX;                //1-int x position in global space
-    int vgy = ly + blockStartY;                 //1-int y position in global space
-    int vgl = vgy * (gp / sizeof(int)) + vgx;   //1-int linearized position in global space
+    int vgl = gy * (gp / sizeof(int)) + vgx;    //1-int linearized position in global space
 
     //Init shared memory groups
-    if (vgy < height && vgx < width) {
+    if (gy < height && vgx < width) {
         if (vgx + 1 < width) {
             reinterpret_cast<int2*>(groupsChunk)[vll >> 1] = reinterpret_cast<int2*>(groups)[vgl >> 1];
         } else {
@@ -175,7 +174,7 @@ __global__ void cc_kernel(int* groups, const char* __restrict__ mat, int width, 
 
     if (dirtyBlock) {
         //Race conditions shoulnd't be a concern here
-        if (vgy < height && vgx < width) {
+        if (gy < height && vgx < width) {
             if (vgx + 1 < width) {
                 reinterpret_cast<int2*>(groups)[vgl >> 1] = reinterpret_cast<int2*>(groupsChunk)[vll >> 1];
             } else {
