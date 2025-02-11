@@ -146,8 +146,6 @@ __global__ void cc_kernel(int* groups, const char* __restrict__ mat, int width, 
                 groupsChunk[vll] = groups[vgl];
             }
         }
-        // if (validGlobal) groupsChunk[ll] = groups[glg];
-        // if (validGlobal1) groupsChunk[ll1] = groups[glg1];
 
 
         __syncthreads(); //Await end of initialization
@@ -213,7 +211,7 @@ GroupMatrix cuda_cc(const CharMatrix* __restrict__ mat) {
     cudaEventCreate(&kernel_time_start); cudaEventCreate(&kernel_time_stop);
 
     dim3 numChunks( (mat->width + ChunkSize - 1) / ChunkSize, (mat->height + ChunkSize - 1) / ChunkSize );
-    dim3 numBlocks( numChunks.x, numChunks.y);
+    dim3 numBlocks( numChunks.x, numChunks.y - 1);
     dim3 numThreads(ChunkSize/2, ChunkSize);
 
     //Initialize and allocate device memory for groups
