@@ -57,11 +57,12 @@ __forceinline__ __device__ void propagate(  int lxc, int lyc, int gxc, int gyc, 
         int nlxc = lxc + dx[i]; int ngxc = gxc + dx[i];
         int nlyc = lyc + dy[i]; int ngyc = gyc + dy[i];
 
-        //ToDo: maybe we can prevent the warp divergence caused here?
-        if (!dirtyNeighbour && (nlxc >= ChunkSize || nlyc >= ChunkSize || nlxc < 0 || nlyc < 0)) continue;   //Bounds check (local)
+        bool outOfLocalBounds = nlxc >= ChunkSize || nlyc >= ChunkSize || nlxc < 0 || nlyc < 0;
+
+        if (!dirtyNeighbour && outOfLocalBounds) continue;   //Bounds check (local)
         if (ngxc >= width || ngyc >= height || ngxc < 0 || ngyc < 0) continue;          //Bounds check (global)
 
-        int neighGID = dirtyNeighbour ? groups[ngyc * gp + ngxc] : groupsChunk[nlyc * ChunkSize + nlxc];
+        int neighGID = dirtyNeighbour && outOfLocalBounds ? groups[ngyc * gp + ngxc] : groupsChunk[nlyc * ChunkSize + nlxc];
 
         int newGID = propagate_min(mat[gyc * mp + gxc], mat[ngyc * mp + ngxc], groupsChunk[lyc * ChunkSize + lxc], neighGID);
         if (newGID < groupsChunk[lyc * ChunkSize + lxc]) {
@@ -74,25 +75,25 @@ __forceinline__ __device__ void propagate(  int lxc, int lyc, int gxc, int gyc, 
 }
 
 //Check if there's a dirty neighbouring chunk. If so lower the corresponding directional dirty flag on that chunk
-__forceinline__  __device__ void serialCheckDirty(int ll, bool* __restrict__ dirtyNeighbour, ChunkStatus* __restrict__ status_matrix, dim3 numChunks, int* __restrict__ dirtyBlocks, int sp, dim3 chunk) {
+__forceinline__  __device__ void checkDirty(int ll, bool* __restrict__ dirtyNeighbour, ChunkStatus* __restrict__ status_matrix, dim3 numChunks, int* __restrict__ dirtyBlocks, int sp, dim3 chunk) {
     __threadfence(); //Prevent rare inconsistencies when undirtying a chunk as its still being written to
-    #pragma unroll
-    for (int i = 0; i < 4; i++) {
-        int nx = chunk.x + dx[i];    //New x value
-        int ny = chunk.y + dy[i];    //New y value
-        if (ny >= numChunks.y || ny < 0 || nx >= numChunks.x || nx < 0) continue; //Boundary check
-        int index = ny * sp + nx;
+    
+    if (ll >= 4) return; //Only first 4 threads are needed, one per direction
 
-        int mask = ~bdr[i];
+    int nx = chunk.x + dx[ll];    //New x value
+    int ny = chunk.y + dy[ll];    //New y value
+    if (ny >= numChunks.y || ny < 0 || nx >= numChunks.x || nx < 0) return; //Boundary check
+    int index = ny * sp + nx;
 
-        ChunkStatus old_status = (ChunkStatus)atomicAnd((int*)&status_matrix[index], mask);
-        bool was_dirty = (old_status & bdr[i]) != 0;
+    int mask = ~bdr[ll];
 
-        if (was_dirty) {
-            *dirtyNeighbour = true;
-            if ((old_status & mask) == 0) { //If the last dirty bit has been cleared by this operation decrement dirtyBlocks
-                atomicAdd(dirtyBlocks, -1);
-            }
+    ChunkStatus old_status = (ChunkStatus)atomicAnd((int*)&status_matrix[index], mask);
+    bool was_dirty = (old_status & bdr[ll]) != 0;
+
+    if (was_dirty) {
+        *dirtyNeighbour = true;
+        if ((old_status & mask) == 0) { //If the last dirty bit has been cleared by this operation decrement dirtyBlocks
+            atomicAdd(dirtyBlocks, -1);
         }
     }
 }
@@ -160,9 +161,8 @@ __global__ void cc_kernel(int* groups, const char* __restrict__ mat, int width, 
             if (ll == 0) {
                 blockStable = true;
                 dirtyNeighbour = false;
-                //ToDo: only check this every so often?
-                serialCheckDirty(ll, &dirtyNeighbour, status_matrix, numChunks, dirtyBlocks, spe, chunk);
             }
+            checkDirty(ll, &dirtyNeighbour, status_matrix, numChunks, dirtyBlocks, spe, chunk);
             __syncthreads();
 
             
@@ -210,10 +210,10 @@ __global__ void cc_kernel(int* groups, const char* __restrict__ mat, int width, 
 
 GroupMatrix cuda_cc(const CharMatrix* __restrict__ mat) {
 
-    cudaEvent_t kernel_loop_start, kernel_loop_stop;
-    cudaEventCreate(&kernel_loop_start); cudaEventCreate(&kernel_loop_stop);
-    cudaEvent_t kernel_time_start, kernel_time_stop;
-    cudaEventCreate(&kernel_time_start); cudaEventCreate(&kernel_time_stop);
+    // cudaEvent_t kernel_loop_start, kernel_loop_stop;
+    // cudaEventCreate(&kernel_loop_start); cudaEventCreate(&kernel_loop_stop);
+    // cudaEvent_t kernel_time_start, kernel_time_stop;
+    // cudaEventCreate(&kernel_time_start); cudaEventCreate(&kernel_time_stop);
 
     dim3 numChunks( (mat->width + ChunkSize - 1) / ChunkSize, (mat->height + ChunkSize - 1) / ChunkSize );
     dim3 numBlocks( numChunks.x, numChunks.y );
@@ -271,10 +271,10 @@ GroupMatrix cuda_cc(const CharMatrix* __restrict__ mat) {
     int iters = 0;
     bool err = false;
 
-    float kernel_time = 0;
+    // float kernel_time = 0;
 
     //Loop until stable
-    cudaEventRecord(kernel_loop_start);
+    // cudaEventRecord(kernel_loop_start);
     while (*h_dirty > 0 && !err) {
 
         // printf("Dirty blocks: %d\n", *h_dirty);
@@ -284,18 +284,18 @@ GroupMatrix cuda_cc(const CharMatrix* __restrict__ mat) {
         // void** args_dyn = (void**)malloc(sizeof(args));
         // memcpy(args_dyn, args, sizeof(args));
         
-        cudaEventRecord(kernel_time_start);
+        // cudaEventRecord(kernel_time_start);
         cc_kernel<<<numBlocks, numThreads>>>(d_groups, d_mat, mat->width, mat->height, d_status_matrix, numChunks, d_dirty, groups_pitch / sizeof(int), mat_pitch / sizeof(char), status_pitch / sizeof(ChunkStatus));
         // cudaLaunchCooperativeKernel((void*)cc_kernel, numBlocks, numThreads, args_dyn);
-        cudaEventRecord(kernel_time_stop);
+        // cudaEventRecord(kernel_time_stop);
 
 
         HANDLE_ERROR(cudaMemcpy(h_dirty, d_dirty, sizeof(int), cudaMemcpyDeviceToHost));
         cudaDeviceSynchronize();
 
-        float t;
-        cudaEventElapsedTime(&t, kernel_time_start, kernel_time_stop);
-        kernel_time += t;
+        // float t;
+        // cudaEventElapsedTime(&t, kernel_time_start, kernel_time_stop);
+        // kernel_time += t;
         
         checkCUDAError("call of cuda_cc kernel");
 
@@ -306,7 +306,7 @@ GroupMatrix cuda_cc(const CharMatrix* __restrict__ mat) {
         }
 
     }
-    cudaEventRecord(kernel_loop_stop);
+    // cudaEventRecord(kernel_loop_stop);
 
     //Copy group matrix back to host
     //HANDLE_ERROR(cudaMemcpy(h_groups.groups, (void*)d_groups, mat->width * mat->height * sizeof(int), cudaMemcpyDeviceToHost));
@@ -327,14 +327,16 @@ GroupMatrix cuda_cc(const CharMatrix* __restrict__ mat) {
     //Free device memory
     HANDLE_ERROR(cudaFree(d_groups));
     HANDLE_ERROR(cudaFree(d_mat));
+    HANDLE_ERROR(cudaFree(d_dirty));
+    HANDLE_ERROR(cudaFree(d_status_matrix));
 
     cudaDeviceSynchronize();
 
-    float loop_time;
-    cudaEventElapsedTime(&loop_time, kernel_loop_start, kernel_loop_stop);
-    cudaEventDestroy(kernel_loop_start); cudaEventDestroy(kernel_loop_stop); cudaEventDestroy(kernel_time_start); cudaEventDestroy(kernel_time_stop);
+    // float loop_time;
+    // cudaEventElapsedTime(&loop_time, kernel_loop_start, kernel_loop_stop);
+    // cudaEventDestroy(kernel_loop_start); cudaEventDestroy(kernel_loop_stop); cudaEventDestroy(kernel_time_start); cudaEventDestroy(kernel_time_stop);
 
-    printf("[Loop time: %.1fms | Kernel time: %.1fms]\t", loop_time, kernel_time);
+    // printf("[Loop time: %.1fms | Kernel time: %.1fms]\t", loop_time, kernel_time);
 
     return h_groups;
 
