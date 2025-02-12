@@ -48,7 +48,7 @@ __forceinline__ __device__ int propagate_min(char centerChar, char neighChar, in
 }
 
 __forceinline__ __device__ void propagate(  int lxc, int lyc, int gxc, int gyc, int width, int height, const char* __restrict__ mat, int groupsChunk[ChunkSize * ChunkSize],
-                            bool* __restrict__ blockStable, const int* __restrict__ groups, bool dirtyNeighbour, int mp, int gp) {
+                            bool* __restrict__ blockStable, const int* __restrict__ groups, bool dirtyNeighbour, int mp, int gp, const char* __restrict__ globalMat) {
 
     if (gxc >= width || gyc >= height) return; //Bounds check
 
@@ -63,8 +63,9 @@ __forceinline__ __device__ void propagate(  int lxc, int lyc, int gxc, int gyc, 
         if (ngxc >= width || ngyc >= height || ngxc < 0 || ngyc < 0) continue;          //Bounds check (global)
 
         int neighGID = dirtyNeighbour && outOfLocalBounds ? groups[ngyc * gp + ngxc] : groupsChunk[nlyc * ChunkSize + nlxc];
+        char neighVal = outOfLocalBounds ? globalMat[ngyc * mp + ngxc] : mat[nlyc * ChunkSize + nlxc];
 
-        int newGID = propagate_min(mat[gyc * mp + gxc], mat[ngyc * mp + ngxc], groupsChunk[lyc * ChunkSize + lxc], neighGID);
+        int newGID = propagate_min(mat[lyc * ChunkSize + lxc], neighVal, groupsChunk[lyc * ChunkSize + lxc], neighGID);
         if (newGID < groupsChunk[lyc * ChunkSize + lxc]) {
             groupsChunk[lyc * ChunkSize + lxc] = newGID;
             *blockStable = false;
@@ -119,6 +120,7 @@ __global__ void cc_kernel(int* groups, const char* __restrict__ mat, int width, 
         int gy = blockStartY + ly;                          //Global y index
 
         __shared__ int groupsChunk[ChunkSize * ChunkSize];  //Shared memory for groups of the local chunk
+        __shared__ char cachedMat[ChunkSize * ChunkSize];   //Cached memory for the input matrix
         __shared__ bool blockStable;                        //Is the chunk in a stable configuration?
         __shared__ bool dirtyNeighbour;                     //Are we yet to account for changes in a neighbouring chunk?
         volatile __shared__ bool dirtyBlock;                //Has this chunk been changed?
@@ -140,7 +142,8 @@ __global__ void cc_kernel(int* groups, const char* __restrict__ mat, int width, 
         int vlx = (lx << 1);                        //1-int x position in local space
         int vll = ly * ChunkSize + vlx;             //1-int linearized position in local space
         int vgx = vlx + blockStartX;                //1-int x position in global space
-        int vgl = gy * gpe + vgx;                    //1-int linearized position in global space
+        int vgl = gy * gpe + vgx;                   //1-int linearized position in global space
+        int vglm = gy * mpe + vgx;                  //1-int linearized position in global space with input mat pitch
 
         //Init shared memory groups
         if (gy < height && vgx < width) {
@@ -148,6 +151,15 @@ __global__ void cc_kernel(int* groups, const char* __restrict__ mat, int width, 
                 reinterpret_cast<int2*>(groupsChunk)[vll >> 1] = reinterpret_cast<int2*>(groups)[vgl >> 1];
             } else {
                 groupsChunk[vll] = groups[vgl];
+            }
+        }
+
+        //Init shared matrix cache
+        if (gy < height && vgx < width) {
+            if (vgx + 1 < width) {
+                reinterpret_cast<char2*>(cachedMat)[vll >> 1] = reinterpret_cast<const char2*>(mat)[vglm >> 1];
+            } else {
+                cachedMat[vll] = mat[vglm];
             }
         }
 
@@ -167,9 +179,9 @@ __global__ void cc_kernel(int* groups, const char* __restrict__ mat, int width, 
 
             
 
-            propagate(lxc, ly, gxc, gy, width, height, mat, groupsChunk, &blockStable, groups, dirtyNeighbour, mpe, gpe);
+            propagate(lxc, ly, gxc, gy, width, height, cachedMat, groupsChunk, &blockStable, groups, dirtyNeighbour, mpe, gpe, mat);
             __syncthreads(); //Taking this off doesn't affect the correctness of the solution but causes unecessary propagations to happen worsening performance a bit
-            propagate(lxc1, ly, gxc1, gy, width, height, mat, groupsChunk, &blockStable, groups, dirtyNeighbour, mpe, gpe);
+            propagate(lxc1, ly, gxc1, gy, width, height, cachedMat, groupsChunk, &blockStable, groups, dirtyNeighbour, mpe, gpe, mat);
 
             //__syncthreads(); //Sync all at the end of an iteration
             if (!blockStable) dirtyBlock = true;
