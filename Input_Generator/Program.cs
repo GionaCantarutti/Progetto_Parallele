@@ -5,10 +5,14 @@ using Generator;
 class Program {
     static void Main(string[] args) {
 
+        Console.Write("Generating matrixes...");
         //Generate images
         List<(bool[,], string)> images = Generator.Gen.GetInputs();
+        Console.WriteLine(" done!");
 
         foreach (var (image, name) in images) {
+
+            Console.Write($"Writing {name} to file...");
 
             // Create a string array with the lines of text
             string[] lines = toLines(image);
@@ -22,6 +26,8 @@ class Program {
                 foreach (string line in lines)
                     outputFile.WriteLine(line);
             }
+
+            Console.WriteLine($" done!");
 
         }
     }
