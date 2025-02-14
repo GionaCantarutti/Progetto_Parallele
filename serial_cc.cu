@@ -5,7 +5,6 @@ typedef struct {
     int x,y;
 } Pixel;
 
-//ToDo: improve queue implementation so that it's dynamically sized
 void bfs_run(CharMatrix* chars, GroupMatrix* groups, int x, int y, int groupID) {
 
 
