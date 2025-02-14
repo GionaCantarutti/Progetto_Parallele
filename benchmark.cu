@@ -16,138 +16,111 @@ uint64_t nanos()
     return ns;
 }
 
-void benchmarkSerial(const char** tests, int testCount) {
+// typedef struct Mapping Mapping;
+// struct Mapping {
+//     int from;
+//     int into;
+//     Mapping* next;
+// };
 
-    for (int i = 0; i < testCount; i++) {
+// bool isMapped(Mapping* map, int n) {
 
-        char* inPath = (char*)malloc(sizeof(char) * (strlen(tests[i]) + 8) ); //7 for "Inputs/" and 1 for the "\0"
-        inPath = strcat(strcpy(inPath, "Inputs/"), tests[i]);
+//     while (map != NULL) {
+//         if (n == map->from) return true;
+//         map = map->next;
+//     }
 
-        CharMatrix test = readInputFromFile(inPath);
+//     return false;
 
-        free(inPath);
+// }
 
-        //ToDo: add timing
-        GroupMatrix res = cc_bfs(&test);
+// int mapped(Mapping* map, int n) {
 
-        char* outPath = (char*)malloc(sizeof(char) * (strlen(tests[i]) + 16) ); //15 for "Outputs/Serial/" and 1 for the "\0"
-        inPath = strcat(strcpy(outPath, "Outputs/Serial/"), tests[i]);
+//     while (map != NULL) {
+//         if (n == map->from) return map->into;
+//         map = map->next;
+//     }
 
-        saveGroupMatrixToFile(&res, outPath);
+//     perror("Mapping not found!");
+//     return -1;
 
-        free(outPath);
+// }
 
-        freeMat(&test); freeGroups(&res);
+// bool addMapping(Mapping** mapPtr, int from, int into) {
+//     Mapping *current = *mapPtr;
+//     // Check for injectivity: ensure 'into' isn't already mapped
+//     while (current != NULL) {
+//         if (current->into == into) return false; // 'into' already exists
+//         current = current->next;
+//     }
 
-    }
+//     // Create new node on the heap
+//     Mapping *newmap = (Mapping*)malloc(sizeof(Mapping));
+//     newmap->from = from;
+//     newmap->into = into;
+//     newmap->next = *mapPtr;  // Prepend to list
+//     *mapPtr = newmap;        // Update head pointer
+//     return true;
+// }
 
-}
+// // Helper to free the linked list
+// void freeMappings(Mapping* map) {
+//     while (map != NULL) {
+//         Mapping* next = map->next;
+//         free(map);
+//         map = next;
+//     }
+// }
 
-typedef struct Mapping Mapping;
-struct Mapping {
-    int from;
-    int into;
-    Mapping* next;
-};
+// bool isMatching(GroupMatrix* a, GroupMatrix* b) {
+//     if (a->width != b->width || a->height != b->height) return false;
 
-bool isMapped(Mapping* map, int n) {
+//     Mapping* map = NULL; // Start with empty list
 
-    while (map != NULL) {
-        if (n == map->from) return true;
-        map = map->next;
-    }
+//     // Initialize with first element's mapping
+//     if (!addMapping(&map, a->groups[0], b->groups[0])) {
+//         freeMappings(map);
+//         return false;
+//     }
 
-    return false;
+//     for (int i = 0; i < a->width * a->height; i++) {
+//         int a_val = a->groups[i];
+//         int b_val = b->groups[i];
 
-}
+//         Mapping* current = map;
+//         bool found = false;
+//         while (current != NULL) {
+//             if (current->from == a_val) {
+//                 if (current->into != b_val) {
+//                     freeMappings(map);
+//                     printf("\nFound missmatch at (%d, %d)\n", i % a->width, i / a->width);
+//                     printf("A's value maps to %d but %d is expected\n", current->into, b_val);
+//                     return false;
+//                 }
+//                 found = true;
+//                 break;
+//             }
+//             current = current->next;
+//         }
 
-int mapped(Mapping* map, int n) {
+//         if (!found) {
+//             if (!addMapping(&map, a_val, b_val)) {
+//                 freeMappings(map);
+//                 return false;
+//             }
+//         }
+//     }
 
-    while (map != NULL) {
-        if (n == map->from) return map->into;
-        map = map->next;
-    }
+//     freeMappings(map);
+//     return true;
+// }
 
-    perror("Mapping not found!");
-    return -1;
-
-}
-
-bool addMapping(Mapping** mapPtr, int from, int into) {
-    Mapping *current = *mapPtr;
-    // Check for injectivity: ensure 'into' isn't already mapped
-    while (current != NULL) {
-        if (current->into == into) return false; // 'into' already exists
-        current = current->next;
-    }
-
-    // Create new node on the heap
-    Mapping *newmap = (Mapping*)malloc(sizeof(Mapping));
-    newmap->from = from;
-    newmap->into = into;
-    newmap->next = *mapPtr;  // Prepend to list
-    *mapPtr = newmap;        // Update head pointer
-    return true;
-}
-
-// Helper to free the linked list
-void freeMappings(Mapping* map) {
-    while (map != NULL) {
-        Mapping* next = map->next;
-        free(map);
-        map = next;
-    }
-}
-
-bool isMatching(GroupMatrix* a, GroupMatrix* b) {
-    if (a->width != b->width || a->height != b->height) return false;
-
-    Mapping* map = NULL; // Start with empty list
-
-    // Initialize with first element's mapping
-    if (!addMapping(&map, a->groups[0], b->groups[0])) {
-        freeMappings(map);
-        return false;
-    }
-
-    for (int i = 0; i < a->width * a->height; i++) {
-        int a_val = a->groups[i];
-        int b_val = b->groups[i];
-
-        Mapping* current = map;
-        bool found = false;
-        while (current != NULL) {
-            if (current->from == a_val) {
-                if (current->into != b_val) {
-                    freeMappings(map);
-                    printf("\nFound missmatch at (%d, %d)\n", i % a->width, i / a->width);
-                    printf("A's value maps to %d but %d is expected\n", current->into, b_val);
-                    return false;
-                }
-                found = true;
-                break;
-            }
-            current = current->next;
-        }
-
-        if (!found) {
-            if (!addMapping(&map, a_val, b_val)) {
-                freeMappings(map);
-                return false;
-            }
-        }
-    }
-
-    freeMappings(map);
-    return true;
-}
-
-//Doesn't check for injectivity!
+//Doesn't check for injectivity by itself!
 bool halfMatch(GroupMatrix* a, GroupMatrix* b) {
     if (a->width != b->width || a->height != b->height) return false;
 
     int* mapping;
-    int max_ID = a->width * a->height + 10;
+    int max_ID = a->width * a->height + 10; //Guess at the possible max ID. Won't work if max ID can be higher than the number of cells
     mapping = (int*)malloc(max_ID * sizeof(int));
     for (int i = 0; i < max_ID; i++) mapping[i] = -1;
 
@@ -219,7 +192,7 @@ BenchmarkRun runAndBenchmark(const char** tests, int testCount, bool verify) {
             printf("\n");
         }
 
-        printf("CPU time: %.1fms\t| Device time: %.3fms\n", result.serial_time, result.cuda_time);
+        printf("CPU time: %.1fms\t| Device time: %.1fms\n", result.serial_time, result.cuda_time);
 
         run.results[i] = result;
         run.tests[i] = (char*)tests[i];
@@ -237,7 +210,7 @@ void batchBenchmark(const char** tests, int testCount, int reps, bool verify, co
     char* filePath = (char*)malloc(sizeof(char) * (strlen(batchName) + 20) ); //21 for "Outputs/Benchmarks/" and 1 for the "\0"
     filePath = strcat(strcpy(filePath, "Outputs/Benchmarks/"), batchName);
 
-    FILE* file = fopen(filePath, "w"); //ToDo: support for name changing
+    FILE* file = fopen(filePath, "w");
     if (!file) {
         perror("Error opening file");
         return;

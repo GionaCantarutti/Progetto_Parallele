@@ -18,6 +18,10 @@ namespace Generator {
             inputs.Add((ChessBoard(1000, 1000), "chessboard"));
             inputs.Add((Snake(1000, 1000), "long_snake"));
 
+            inputs.Add((RandomStreaks(100, 100, 1f/20f, 1f/20f), "small_streaks"));
+            inputs.Add((RandomStreaks(10000, 10000, 1f/20f, 1f/20f), "big_streaks"));
+            inputs.Add((RandomStreaks(1024, 1024, 1f/20f, 1f/20f), "32m_streaks"));
+
             return inputs;
         }
 
